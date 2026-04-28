@@ -4,41 +4,48 @@ import { useState } from 'react';
 import dynamic from 'next/dynamic';
 import SearchBar from '@/components/SearchBar';
 import BottomSheet from '@/components/BottomSheet';
+import SearchResultsPanel from '@/components/SearchResultsPanel';
 
-// Dynamic import prevents Next.js SSR crashes with Leaflet's window object
 const LiveMap = dynamic(() => import('@/components/LiveMap'), { 
   ssr: false,
   loading: () => (
     <div className="w-full h-full bg-gray-50 flex flex-col items-center justify-center">
-      <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-4"></div>
-      <p className="text-gray-500 font-medium">Loading Map...</p>
+      <div className="w-8 h-8 border-4 border-gray-400 border-t-transparent rounded-full animate-spin mb-4"></div>
     </div>
   )
 });
 
-export default function Home() {
-  const [isSheetOpen, setIsSheetOpen] = useState(false);
+export type UIState = 'STANDBY' | 'SEARCHING' | 'STOP_SELECTED';
 
-  // Simulated interaction: Opening the sheet when clicking the search bar
-  const handleSearchFocus = () => {
-    setIsSheetOpen(true);
-  };
+export default function Home() {
+  const [uiState, setUiState] = useState<UIState>('STANDBY');
 
   return (
-    <main className="relative h-screen w-screen overflow-hidden bg-gray-50 font-sans">
+    <main className="relative h-[100dvh] w-screen overflow-hidden bg-gray-50 font-sans">
       
-      {/* 1. Background Map Layer */}
+      {/* Background Map */}
       <div className="absolute inset-0 z-0">
         <LiveMap />
       </div>
 
-      {/* 2. Top Foreground: Search Command Center */}
-      <SearchBar onSearchFocus={handleSearchFocus} />
+      {/* Full Screen Search Results (Covers Map and Sheet) */}
+      {uiState === 'SEARCHING' && (
+        <SearchResultsPanel 
+          onSelectStop={() => setUiState('STOP_SELECTED')} 
+        />
+      )}
 
-      {/* 3. Bottom Foreground: Interactive Data Sheet */}
+      {/* Top Foreground: Search Command Center */}
+      <SearchBar 
+        uiState={uiState}
+        onSearchFocus={() => setUiState('SEARCHING')} 
+        onCancel={() => setUiState('STANDBY')}
+      />
+
+      {/* Bottom Foreground: Draggable Data Sheet */}
       <BottomSheet 
-        isOpen={isSheetOpen} 
-        onClose={() => setIsSheetOpen(false)} 
+        isOpen={uiState === 'STOP_SELECTED'} 
+        onClose={() => setUiState('STANDBY')} 
       />
 
     </main>
