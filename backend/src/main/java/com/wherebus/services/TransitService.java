@@ -44,23 +44,24 @@ public class TransitService {
 
         try {
             loadStops();
-            // loadRoutes(); // TODO: implement loadRoutes
+            loadRoutes();
         } catch (Exception e) {
             System.err.println("Failed to load static transit data: " + e.getMessage());
         }
 
-        System.out.println("Loaded " + stopDirectory.size() + " stops into the Hash Table.");
+        System.out.println("Loaded " + stopDirectory.size() + " stops into the hash table.");
+        System.out.println("Loaded " + routeDirectory.size() + " routes into the hash table.");
     }
 
     /**
      * Reads stops.txt from the resources folder and populates the stopDirectory hash table
-     * Expects CSV format: stop_id,stop_name,stop_lat,stop_lon
+     * Header: stop_id,stop_name,stop_desc,stop_lat,stop_lon
+     * Example: 1005840,STESEN BRT SETIA JAYA,BRT LALUAN SUNWAY,3.082856,101.612238
      */
     private void loadStops() throws Exception {
         // ClassPathResource safely finds files inside src/main/resources/
         ClassPathResource resource = new ClassPathResource("data/stops.txt");
 
-        // Example row: 1005840,STESEN BRT SETIA JAYA,BRT LALUAN SUNWAY,3.082856,101.612238
 
         try (CSVReader reader = new CSVReader(new InputStreamReader(resource.getInputStream(), StandardCharsets.UTF_8))) {
             String[] nextLine;
@@ -79,6 +80,30 @@ public class TransitService {
             }
         } catch (Exception e) {
             e.printStackTrace();
+        }
+    }
+
+    /**
+     * Reads routes.txt from the resources folder and populates the routeDirectory hash table
+     * Header: route_id,agency_id,route_short_name,route_long_name,route_type,route_color,route_text_color
+     * Example: B1000,rapidkl,SUNWAY LINE,BRT USJ 7 - BRT Setia Jaya,3,21618C,FFFFFF
+     */
+    private void loadRoutes() {
+        ClassPathResource resource = new ClassPathResource("data/routes.txt");
+
+        try (CSVReader reader = new CSVReader(new InputStreamReader(resource.getInputStream(), StandardCharsets.UTF_8))) {
+            String[] nextLine;
+            reader.skip(1);  // Skip header line
+
+            while ((nextLine = reader.readNext()) != null) {
+                String id = nextLine[0].trim();
+                String name = nextLine[2].trim();
+                String longName = nextLine[3].trim();
+                Route route = new Route(id, name, longName);
+                routeDirectory.put(id, route);
+            }
+        } catch (Exception e) {
+            System.err.println("Error reading routes.txt: " + e.getMessage());
         }
     }
 
