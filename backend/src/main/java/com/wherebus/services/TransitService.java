@@ -45,12 +45,15 @@ public class TransitService {
         try {
             loadStops();
             loadRoutes();
+            buildGraphsAndLists();
         } catch (Exception e) {
             System.err.println("Failed to load static transit data: " + e.getMessage());
         }
 
         System.out.println("Loaded " + stopDirectory.size() + " stops into the hash table.");
         System.out.println("Loaded " + routeDirectory.size() + " routes into the hash table.");
+        System.out.println("Loaded " + routePaths.size() + " route paths into the list.");
+        System.out.println("Loaded " + stopGraph.size() + " vertex connections into the adjacency graph.");
     }
 
     /**
@@ -104,6 +107,89 @@ public class TransitService {
             }
         } catch (Exception e) {
             System.err.println("Error reading routes.txt: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Reads trips.txt to find representative trip_ids for each route.
+     * Captures TWO trips per route (one for direction 0, one for direction 1)
+     * to ensure the graph maps both sides of the street.
+     */
+    private Map<String, String> loadRepresentativeTrips() {
+        Map<String, String> tripToRouteMap = new HashMap<>();
+
+        // Tracks which route+direction combos we've already found
+        Set<String> processedRouteDirections = new HashSet<>();
+
+        ClassPathResource resource = new ClassPathResource("data/trips.txt");
+
+        try (CSVReader reader = new CSVReader(new InputStreamReader(resource.getInputStream(), StandardCharsets.UTF_8))) {
+            String[] nextLine;
+            reader.skip(1); // Skip header
+
+            while ((nextLine = reader.readNext()) != null) {
+                String routeId = nextLine[0].trim();
+                String tripId = nextLine[2].trim();
+                String directionId = nextLine[4].trim(); // Usually 0 or 1
+
+                String uniqueRouteDirection = routeId + "_" + directionId;
+
+                if (!processedRouteDirections.contains(uniqueRouteDirection)) {
+                    tripToRouteMap.put(tripId, routeId);
+                    processedRouteDirections.add(uniqueRouteDirection);
+
+                    routePaths.putIfAbsent(routeId, new LinkedList<>());
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("Error reading trips.txt: " + e.getMessage());
+        }
+        return tripToRouteMap;
+    }
+
+    /**
+     * Reads stop_times.txt and builds the Linked Lists and Graphs.
+     * Parses instantly by skipping rows that don't belong to our target trips.
+     */
+    private void buildGraphsAndLists() {
+        Map<String, String> targetTrips = loadRepresentativeTrips();
+        ClassPathResource resource = new ClassPathResource("data/stop_times.txt");
+
+        try (CSVReader reader = new CSVReader(new InputStreamReader(resource.getInputStream(), StandardCharsets.UTF_8))) {
+            String[] nextLine;
+            reader.skip(1); // Skip header
+
+            String previousStopId = null;
+            String currentTripId = null;
+
+            while ((nextLine = reader.readNext()) != null) {
+                String tripId = nextLine[0].trim();
+                String stopId = nextLine[3].trim();
+
+                // Fast-fail: Skip 99% of the file that we don't need
+                if (!targetTrips.containsKey(tripId)) {
+                    continue;
+                }
+
+                String routeId = targetTrips.get(tripId);
+
+                // 1. Add to the Linked List (prevents duplicate stops if both directions share one)
+                LinkedList<String> path = routePaths.get(routeId);
+                if (path.isEmpty() || !path.getLast().equals(stopId)) {
+                    path.add(stopId);
+                }
+
+                // 2. Build the Adjacency Graph
+                // If we are on the same continuous trip, connect the previous stop to this one
+                if (tripId.equals(currentTripId) && previousStopId != null) {
+                    stopGraph.computeIfAbsent(previousStopId, k -> new ArrayList<>()).add(stopId);
+                }
+
+                previousStopId = stopId;
+                currentTripId = tripId;
+            }
+        } catch (Exception e) {
+            System.err.println("Error reading stop_times.txt: " + e.getMessage());
         }
     }
 
