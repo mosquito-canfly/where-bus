@@ -1,14 +1,17 @@
 'use client';
 
 import { motion, AnimatePresence } from 'framer-motion';
-import { Bus } from 'lucide-react';
+import { Bus, MapPin, Route as RouteIcon } from 'lucide-react';
+import { Stop, Route } from '@/app/page';
 
 interface BottomSheetProps {
   isOpen: boolean;
   onClose: () => void;
+  selectedStop: Stop | null;
+  selectedRoute: Route | null;
 }
 
-export default function BottomSheet({ isOpen, onClose }: BottomSheetProps) {
+export default function BottomSheet({ isOpen, onClose, selectedStop, selectedRoute }: BottomSheetProps) {
   return (
     <AnimatePresence>
       {isOpen && (
@@ -35,29 +38,40 @@ export default function BottomSheet({ isOpen, onClose }: BottomSheetProps) {
 
           {/* Scrollable Content inside the sheet */}
           <div className="px-6 pb-8 pt-2 overflow-y-auto flex-1">
-            <h2 className="text-xl font-bold text-gray-900 mb-1">Masjid Ar-Rahman</h2>
-            <p className="text-sm text-gray-500 mb-5">Universiti Malaya • Stop ID: 100432</p>
+            
+            {/* View for when a STOP is selected */}
+            {selectedStop && (
+              <>
+                <h2 className="text-xl font-bold text-gray-900 mb-1 flex items-center">
+                  <MapPin size={20} className="mr-2 text-gray-500" />
+                  {selectedStop.name}
+                </h2>
+                <p className="text-sm text-gray-500 mb-5 ml-7">Stop ID: {selectedStop.id}</p>
+                
+                {/* Phase 6 Placeholder */}
+                <div className="p-4 bg-gray-50 border border-gray-200 rounded-2xl flex flex-col items-center justify-center text-gray-400 py-8">
+                  <Bus size={24} className="mb-2 opacity-50" />
+                  <p className="text-sm text-center">Real-time ETAs will appear here once live tracking is connected.</p>
+                </div>
+              </>
+            )}
 
-            <div className="space-y-3">
-              {/* Mock Real Data Card */}
-              <div className="flex items-center justify-between p-4 bg-gray-50 border border-gray-200 rounded-2xl">
-                <div className="flex items-center space-x-4">
-                  <div className="bg-gray-800 text-white font-bold px-3 py-1.5 rounded-lg text-sm">
-                    T789
-                  </div>
-                  <div>
-                    <p className="font-semibold text-gray-900 text-sm">LRT Universiti</p>
-                    <div className="flex items-center text-xs text-gray-500 mt-0.5">
-                      <Bus size={12} className="mr-1" /> Approaching
-                    </div>
-                  </div>
+            {/* View for when a ROUTE is selected */}
+            {selectedRoute && (
+              <>
+                <h2 className="text-xl font-bold text-gray-900 mb-1 flex items-center">
+                  <RouteIcon size={20} className="mr-2 text-blue-500" />
+                  {selectedRoute.name}
+                </h2>
+                <p className="text-sm text-gray-500 mb-5 ml-7">{selectedRoute.longName}</p>
+                
+                <div className="p-4 bg-blue-50 border border-blue-100 rounded-2xl text-blue-700 text-sm flex items-center leading-relaxed">
+                  <MapPin size={20} className="mr-3 shrink-0" />
+                  The map is now displaying this route's path. Select a specific stop on the map to view arriving buses.
                 </div>
-                <div className="text-right">
-                  <p className="text-lg font-bold text-gray-800">4 min</p>
-                  <p className="text-xs text-gray-400">10:50 AM</p>
-                </div>
-              </div>
-            </div>
+              </>
+            )}
+
           </div>
         </motion.div>
       )}

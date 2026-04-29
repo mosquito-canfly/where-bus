@@ -8,6 +8,8 @@ import org.springframework.web.bind.annotation.*;
 import java.util.ArrayList;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Map;
+import java.util.HashMap;
 
 /**
  * REST Controller for serving static transit data to the frontend.
