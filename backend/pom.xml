@@ -30,6 +30,12 @@
             <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
             <version>3.0.1</version>
         </dependency>
+
+        <dependency>
+            <groupId>com.google.protobuf</groupId>
+            <artifactId>protobuf-java</artifactId>
+            <version>4.34.1</version>
+        </dependency>
     </dependencies>
 	<groupId>com.wherebus</groupId>
 	<artifactId>wherebus</artifactId>
