@@ -45,33 +45,40 @@ public class EtaCalculationService {
         for (Map.Entry<String, VehiclePosition> entry : activeFleet.entrySet()) {
             VehiclePosition vehicle = entry.getValue();
 
-            // In GTFS-RT, the route ID is typically stored inside the Trip descriptor
-            if (vehicle.hasTrip() && routeId.equalsIgnoreCase(vehicle.getTrip().getRouteId())) {
+            if (vehicle.hasTrip()) {
+                String broadcastedRouteId = vehicle.getTrip().getRouteId();
 
-                double busLat = vehicle.getPosition().getLatitude();
-                double busLon = vehicle.getPosition().getLongitude();
+                // FIXED: Handle Prasarana's trailing '0' formatting quirk
+                // Matches requested "T789" exactly OR matches broadcasted "T7890"
+                boolean matchesRoute = routeId.equalsIgnoreCase(broadcastedRouteId) ||
+                        (routeId + "0").equalsIgnoreCase(broadcastedRouteId);
 
-                // Calculate spherical distance in meters using the Haversine formula
-                double distanceMeters = calculateHaversineDistance(
-                        busLat, busLon, targetStop.getLatitude(), targetStop.getLongitude()
-                );
+                if (matchesRoute) {
+                    double busLat = vehicle.getPosition().getLatitude();
+                    double busLon = vehicle.getPosition().getLongitude();
 
-                // Try to get live speed from the bus, otherwise use our KL average fallback
-                double speedMps = vehicle.getPosition().hasSpeed() && vehicle.getPosition().getSpeed() > 1.0
-                        ? vehicle.getPosition().getSpeed()
-                        : DEFAULT_BUS_SPEED_MPS;
+                    // Calculate spherical distance in meters using the Haversine formula
+                    double distanceMeters = calculateHaversineDistance(
+                            busLat, busLon, targetStop.getLatitude(), targetStop.getLongitude()
+                    );
 
-                int secondsRemaining = (int) (distanceMeters / speedMps);
+                    // Try to get live speed from the bus, otherwise use our KL average fallback
+                    double speedMps = vehicle.getPosition().hasSpeed() && vehicle.getPosition().getSpeed() > 1.0
+                            ? vehicle.getPosition().getSpeed()
+                            : DEFAULT_BUS_SPEED_MPS;
 
-                // Only queue buses that are within a reasonable distance (e.g., less than 15km away)
-                if (distanceMeters < 15000) {
-                    String licensePlate = vehicle.getVehicle().hasLicensePlate()
-                            ? vehicle.getVehicle().getLicensePlate()
-                            : entry.getKey();
+                    int secondsRemaining = (int) (distanceMeters / speedMps);
 
-                    arrivalHeap.offer(new ArrivalPrediction(
-                            entry.getKey(), licensePlate, distanceMeters, secondsRemaining
-                    ));
+                    // Only queue buses that are within a reasonable distance (e.g., less than 15km away)
+                    if (distanceMeters < 15000) {
+                        String licensePlate = vehicle.getVehicle().hasLicensePlate()
+                                ? vehicle.getVehicle().getLicensePlate()
+                                : entry.getKey();
+
+                        arrivalHeap.offer(new ArrivalPrediction(
+                                entry.getKey(), licensePlate, distanceMeters, secondsRemaining
+                        ));
+                    }
                 }
             }
         }
