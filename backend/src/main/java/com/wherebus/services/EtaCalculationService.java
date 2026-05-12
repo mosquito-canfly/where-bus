@@ -69,16 +69,13 @@ public class EtaCalculationService {
 
                     int secondsRemaining = (int) (distanceMeters / speedMps);
 
-                    // Only queue buses that are within a reasonable distance (e.g., less than 15km away)
-                    if (distanceMeters < 15000) {
-                        String licensePlate = vehicle.getVehicle().hasLicensePlate()
-                                ? vehicle.getVehicle().getLicensePlate()
-                                : entry.getKey();
+                    String licensePlate = vehicle.getVehicle().hasLicensePlate()
+                            ? vehicle.getVehicle().getLicensePlate()
+                            : entry.getKey();
 
-                        arrivalHeap.offer(new ArrivalPrediction(
-                                entry.getKey(), licensePlate, distanceMeters, secondsRemaining
-                        ));
-                    }
+                    arrivalHeap.offer(new ArrivalPrediction(
+                            entry.getKey(), licensePlate, distanceMeters, secondsRemaining
+                    ));
                 }
             }
         }

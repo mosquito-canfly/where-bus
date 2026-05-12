@@ -33,7 +33,7 @@ public class LiveTrackingService {
      */
     @Scheduled(fixedRate = 30000)
     public void refreshLiveVehiclePositions() {
-        System.out.println("⏳ [Heartbeat] Requesting live RapidKL bus coordinates...");
+        System.out.println("⏳ Requesting live RapidKL bus coordinates...");
 
         try {
             URL url = new URI(LIVE_FEED_URL).toURL();
@@ -64,16 +64,16 @@ public class LiveTrackingService {
                         }
                     }
 
-                    System.out.println("✅ [Heartbeat] Successfully ingested " + updatedCount + " active RapidKL buses.");
+                    System.out.println("✅ Successfully ingested " + updatedCount + " active RapidKL buses.");
                 }
             } else {
-                System.err.println("⚠️ [Heartbeat] Received unexpected HTTP response: " + responseCode);
+                System.err.println("⚠️ Received unexpected HTTP response: " + responseCode);
             }
 
             connection.disconnect();
 
         } catch (Exception e) {
-            System.err.println("❌ [Heartbeat] Failed to fetch live GTFS-RT feed: " + e.getMessage());
+            System.err.println("❌ Failed to fetch live GTFS-RT feed: " + e.getMessage());
         }
     }
 
