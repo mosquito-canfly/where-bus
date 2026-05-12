@@ -9,6 +9,7 @@ import io.swagger.v3.oas.annotations.media.Schema;
  */
 @Schema(description = "Entity representing a physical transit stop or station along a route.")
 public class Stop {
+
     @Schema(description = "Unique system identifier for the stop.", example = "1001410")
     private String id;
 
@@ -21,11 +22,20 @@ public class Stop {
     @Schema(description = "Geographic longitude coordinate.", example = "101.6618")
     private double longitude;
 
+    @Schema(description = "Operational network classification tag driving client-side badges.", example = "rapid-bus-kl")
+    private String category;
+
     /**
-     * Constructs a new Stop instance.
+     * Default no-argument constructor required by Spring Data / Serialization libraries.
+     */
+    public Stop() {
+    }
+
+    /**
+     * Constructs a new Stop instance without category initialization.
      *
-     * @param id        The unique identifier for the bus stop (e.g., "100432").
-     * @param name      The human-readable name of the stop (e.g., "Masjid Ar-Rahman").
+     * @param id        The unique identifier for the bus stop (e.g., "1001410").
+     * @param name      The human-readable name of the stop.
      * @param latitude  The geographical latitude coordinate of the stop.
      * @param longitude The geographical longitude coordinate of the stop.
      */
@@ -34,6 +44,23 @@ public class Stop {
         this.name = name;
         this.latitude = latitude;
         this.longitude = longitude;
+    }
+
+    /**
+     * Constructs a new Stop instance with full metadata including network categorization.
+     *
+     * @param id        The unique identifier for the bus stop.
+     * @param name      The human-readable name of the stop.
+     * @param latitude  The geographical latitude coordinate.
+     * @param longitude The geographical longitude coordinate.
+     * @param category  The parent directory network string (e.g., "rapid-bus-kl" or "rapid-bus-mrtfeeder").
+     */
+    public Stop(String id, String name, double latitude, double longitude, String category) {
+        this.id = id;
+        this.name = name;
+        this.latitude = latitude;
+        this.longitude = longitude;
+        this.category = category;
     }
 
     /** @return The unique identifier of the stop. */
@@ -59,4 +86,10 @@ public class Stop {
 
     /** @param longitude The geographical longitude to set. */
     public void setLongitude(double longitude) { this.longitude = longitude; }
+
+    /** @return The network category tag of the stop. */
+    public String getCategory() { return category; }
+
+    /** @param category The network category string to set. */
+    public void setCategory(String category) { this.category = category; }
 }
