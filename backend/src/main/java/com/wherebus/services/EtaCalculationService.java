@@ -41,6 +41,7 @@ public class EtaCalculationService {
         // 2. Grab the live fleet from memory
         Map<String, VehiclePosition> activeFleet = liveTrackingService.getActiveVehicles();
 
+
         // 3. Filter and calculate ETAs
         for (Map.Entry<String, VehiclePosition> entry : activeFleet.entrySet()) {
             VehiclePosition vehicle = entry.getValue();
@@ -48,8 +49,7 @@ public class EtaCalculationService {
             if (vehicle.hasTrip()) {
                 String broadcastedRouteId = vehicle.getTrip().getRouteId();
 
-                // FIXED: Handle Prasarana's trailing '0' formatting quirk
-                // Matches requested "T789" exactly OR matches broadcasted "T7890"
+                // Match requested "T789" exactly OR match broadcasted "T7890"
                 boolean matchesRoute = routeId.equalsIgnoreCase(broadcastedRouteId) ||
                         (routeId + "0").equalsIgnoreCase(broadcastedRouteId);
 
@@ -57,24 +57,26 @@ public class EtaCalculationService {
                     double busLat = vehicle.getPosition().getLatitude();
                     double busLon = vehicle.getPosition().getLongitude();
 
-                    // Calculate spherical distance in meters using the Haversine formula
                     double distanceMeters = calculateHaversineDistance(
                             busLat, busLon, targetStop.getLatitude(), targetStop.getLongitude()
                     );
 
-                    // Try to get live speed from the bus, otherwise use our KL average fallback
                     double speedMps = vehicle.getPosition().hasSpeed() && vehicle.getPosition().getSpeed() > 1.0
                             ? vehicle.getPosition().getSpeed()
                             : DEFAULT_BUS_SPEED_MPS;
 
                     int secondsRemaining = (int) (distanceMeters / speedMps);
 
+                    // Safely extract the direction flag from the moving bus
+                    int directionId = vehicle.getTrip().hasDirectionId() ? vehicle.getTrip().getDirectionId() : 0;
+
                     String licensePlate = vehicle.getVehicle().hasLicensePlate()
                             ? vehicle.getVehicle().getLicensePlate()
                             : entry.getKey();
 
+                    // Push the direction flag into the Min-Heap alongside the telemetry
                     arrivalHeap.offer(new ArrivalPrediction(
-                            entry.getKey(), licensePlate, distanceMeters, secondsRemaining
+                            entry.getKey(), licensePlate, distanceMeters, secondsRemaining, directionId
                     ));
                 }
             }
@@ -91,6 +93,10 @@ public class EtaCalculationService {
             payload.put("distanceMeters", Math.round(prediction.getDistanceMeters()));
             payload.put("etaSeconds", prediction.getSecondsRemaining());
             payload.put("etaFormatted", formatEta(prediction.getSecondsRemaining()));
+
+            // Expose the direction outputs to the frontend JSON structure
+            payload.put("directionId", prediction.getDirectionId());
+            payload.put("directionLabel", prediction.getDirectionId() == 0 ? "outbound" : "inbound");
 
             sortedArrivals.add(payload);
         }
@@ -129,17 +135,20 @@ public class EtaCalculationService {
         private final String licensePlate;
         private final double distanceMeters;
         private final int secondsRemaining;
+        private final int directionId; // Added direction tracking
 
-        public ArrivalPrediction(String vehicleId, String licensePlate, double distanceMeters, int secondsRemaining) {
+        public ArrivalPrediction(String vehicleId, String licensePlate, double distanceMeters, int secondsRemaining, int directionId) {
             this.vehicleId = vehicleId;
             this.licensePlate = licensePlate;
             this.distanceMeters = distanceMeters;
             this.secondsRemaining = secondsRemaining;
+            this.directionId = directionId;
         }
 
         public String getVehicleId() { return vehicleId; }
         public String getLicensePlate() { return licensePlate; }
         public double getDistanceMeters() { return distanceMeters; }
         public int getSecondsRemaining() { return secondsRemaining; }
+        public int getDirectionId() { return directionId; }
     }
 }

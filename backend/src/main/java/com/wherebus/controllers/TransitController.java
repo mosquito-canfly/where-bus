@@ -181,17 +181,18 @@ public class TransitController {
 
     /**
      * Retrieves live GPS coordinates for all buses actively running on a route.
+     * Includes real-time directionality flags (0 = Outbound, 1 = Inbound).
      * Example: GET /api/transit/vehicles?routeId=T789
      */
     @Operation(
             summary = "Get Active Fleet Coordinates",
-            description = "Pulls raw GPS telemetry from the thread-safe ConcurrentHashMap for all actively moving buses assigned to a route, allowing the frontend map to animate moving markers. Accounts for Prasarana's internal trailing zero format."
+            description = "Pulls raw GPS telemetry from the thread-safe ConcurrentHashMap for all actively moving buses assigned to a route. Injects binary direction flags (0 for Outbound, 1 for Inbound) extracted directly from the GTFS-Realtime Trip Descriptor."
     )
     @ApiResponse(
             responseCode = "200",
             description = "Live vehicle telemetry returned successfully.",
             content = @Content(mediaType = "application/json", examples = @ExampleObject(
-                    value = "[\n  {\n    \"vehicleId\": \"WB4408N\",\n    \"licensePlate\": \"WB4408N\",\n    \"latitude\": 3.106551,\n    \"longitude\": 101.666084\n  }\n]"
+                    value = "[\n  {\n    \"vehicleId\": \"WB4408N\",\n    \"licensePlate\": \"WB4408N\",\n    \"latitude\": 3.106551,\n    \"longitude\": 101.666084,\n    \"directionId\": 0,\n    \"directionLabel\": \"outbound\"\n  }\n]"
             ))
     )
     @GetMapping("/vehicles")
@@ -218,6 +219,11 @@ public class TransitController {
                             ? v.getVehicle().getLicensePlate()
                             : entry.getKey());
 
+                    // EXTRACT DIRECTION: Safely pull the direction_id from the feed schema
+                    int directionId = v.getTrip().hasDirectionId() ? v.getTrip().getDirectionId() : 0;
+                    busData.put("directionId", directionId);
+                    busData.put("directionLabel", directionId == 0 ? "outbound" : "inbound");
+
                     vehicles.add(busData);
                 }
             }
@@ -226,7 +232,7 @@ public class TransitController {
     }
 
     /**
-     * TEMPORARY DEBUG ENDPOINT
+     * Debug endpoint
      * Hit http://localhost:8080/api/transit/debug-fleet to see exactly how Prasarana
      * is formatting their active Route IDs right now.
      */
