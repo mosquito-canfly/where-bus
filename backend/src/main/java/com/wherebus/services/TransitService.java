@@ -14,196 +14,187 @@ import java.nio.charset.StandardCharsets;
 import com.opencsv.CSVReader;
 
 /**
- * The core service responsible for holding the unified transit network in memory.
- * Implements the required data structures (Hash Tables, Graphs, Linked Lists)
- * to store and traverse static routing data across multiple GTFS feeds.
+ * Loads static GTFS data at startup and holds the full transit network in memory.
+ *
+ * <p>Data structures:
+ * <ul>
+ *   <li>{@code stopDirectory} / {@code routeDirectory} — HashMap for O(1) ID lookups.
+ *       Safe without synchronisation because neither map is mutated after startup.</li>
+ *   <li>{@code routePaths} — LinkedList per route preserving the ordered stop sequence
+ *       as defined in stop_times.txt.</li>
+ *   <li>{@code stopGraph} — Adjacency list mapping each stop to its direct successors,
+ *       built from representative trips in both feed directions.</li>
+ * </ul>
+ *
+ * <p>Two feeds are merged: {@code rapid-bus-kl} and {@code rapid-bus-mrtfeeder}.
+ * When a stop or route ID appears in both, the later feed wins and a warning is logged.
  */
 @Service
 public class TransitService {
 
-    // Thread-safe Hash tables for O(1) fast lookup of stops and routes by their ID across networks
     private final Map<String, Stop> stopDirectory = new HashMap<>();
     private final Map<String, Route> routeDirectory = new HashMap<>();
-
-    // Linked lists to store the strictly ordered sequence of stops for a specific route
-    // Key: RouteID (e.g., "T789" or "T815"), Value: Linked List of StopIDs in order
     private final Map<String, LinkedList<String>> routePaths = new HashMap<>();
-
-    // Graph (adjacency list) to map the physical network connections
-    // Key: StopID, Value: List of adjacent StopIDs that can be reached directly from the key
     private final Map<String, List<String>> stopGraph = new HashMap<>();
 
-    // Define all target GTFS asset folders to merge
     private static final String[] FEED_DIRECTORIES = {
             "data/rapid-bus-kl",
             "data/rapid-bus-mrtfeeder"
     };
 
-    /**
-     * This method runs automatically exactly once when the Spring Boot server starts.
-     * It sequentially processes all specified feed directories to unify the static network.
-     */
+    /** Runs once on startup. Loads all feeds sequentially and logs a summary. */
     @PostConstruct
     public void initializeStaticData() {
-        System.out.println("Server started. Initializing Unified Multi-Feed Transit Data Structures...");
+        System.out.println("Initialising static GTFS data...");
 
         for (String folder : FEED_DIRECTORIES) {
-            System.out.println("➡️ Parsing static GTFS directory: " + folder);
+            System.out.println("➡️  Loading: " + folder);
             try {
                 loadStops(folder);
                 loadRoutes(folder);
-                buildGraphsAndLists(folder);
+                buildGraphsAndPaths(folder);
             } catch (Exception e) {
-                System.err.println("❌ Failed to load static data for [" + folder + "]: " + e.getMessage());
+                System.err.println("❌ Failed to load [" + folder + "]: " + e.getMessage());
             }
         }
 
-        System.out.println("✅ Ingestion Complete. Loaded " + stopDirectory.size() + " unified stops.");
-        System.out.println("✅ Loaded " + routeDirectory.size() + " unified routes.");
-        System.out.println("✅ Loaded " + routePaths.size() + " total route paths.");
-        System.out.println("✅ Loaded " + stopGraph.size() + " vertex connections into the adjacency graph.");
+        System.out.println("✅ Stops loaded:       " + stopDirectory.size());
+        System.out.println("✅ Routes loaded:      " + routeDirectory.size());
+        System.out.println("✅ Route paths loaded: " + routePaths.size());
+        System.out.println("✅ Graph vertices:     " + stopGraph.size());
     }
 
-    /**
-     * Reads stops.txt from the targeted feed folder and populates the stopDirectory hash table.
-     * Injects the parent feed namespace as a structural category property on the entity.
-     */
+    /** Parses stops.txt and populates stopDirectory. Tags each stop with its source feed. */
     private void loadStops(String folderPath) throws Exception {
+        String category = folderPath.substring(folderPath.lastIndexOf('/') + 1);
         ClassPathResource resource = new ClassPathResource(folderPath + "/stops.txt");
 
         try (CSVReader reader = new CSVReader(new InputStreamReader(resource.getInputStream(), StandardCharsets.UTF_8))) {
-            String[] nextLine;
-            reader.skip(1);  // Skip header line
+            reader.skip(1);
+            String[] row;
+            while ((row = reader.readNext()) != null) {
+                String id = row[0].trim();
+                String name = row[1].trim() + ", " + row[2].trim();
+                double lat = Double.parseDouble(row[3]);
+                double lon = Double.parseDouble(row[4]);
 
-            // Extract the operational category tag from the folder path (e.g., "rapid-bus-kl")
-            String categoryTag = folderPath.substring(folderPath.lastIndexOf('/') + 1);
-
-            while ((nextLine = reader.readNext()) != null) {
-                String id = nextLine[0].trim();
-                String name = nextLine[1].trim() + ", " + nextLine[2].trim();
-                double lat = Double.parseDouble(nextLine[3]);
-                double lon = Double.parseDouble(nextLine[4]);
-
-                // Track and log potential ID namespace collisions across networks safely
                 if (stopDirectory.containsKey(id)) {
-                    System.out.println("⚠️ [Merge Overwrite] Stop ID " + id + " loaded from multiple networks. Prioritizing definition from: " + categoryTag);
+                    System.out.println("⚠️  Stop ID collision: " + id + " — overwriting with definition from " + category);
                 }
 
-                // Initialize entity and inject network classification label
-                Stop stop = new Stop(id, name, lat, lon);
-                stop.setCategory(categoryTag);
-
-                stopDirectory.put(id, stop);
+                stopDirectory.put(id, new Stop(id, name, lat, lon, category));
             }
         }
     }
 
-    /**
-     * Reads routes.txt from the targeted feed folder and populates the routeDirectory hash table.
-     */
+    /** Parses routes.txt and populates routeDirectory. */
     private void loadRoutes(String folderPath) throws Exception {
         ClassPathResource resource = new ClassPathResource(folderPath + "/routes.txt");
 
         try (CSVReader reader = new CSVReader(new InputStreamReader(resource.getInputStream(), StandardCharsets.UTF_8))) {
-            String[] nextLine;
-            reader.skip(1);  // Skip header line
-
-            while ((nextLine = reader.readNext()) != null) {
-                String id = nextLine[0].trim();
-                String name = nextLine[2].trim();
-                String longName = nextLine[3].trim();
+            reader.skip(1);
+            String[] row;
+            while ((row = reader.readNext()) != null) {
+                String id = row[0].trim();
+                String name = row[2].trim();
+                String longName = row[3].trim();
 
                 if (routeDirectory.containsKey(id)) {
-                    System.out.println("⚠️ [Merge Overwrite] Route ID " + id + " collides across feeds. Updating definition.");
+                    System.out.println("⚠️  Route ID collision: " + id + " — overwriting with updated definition.");
                 }
 
-                Route route = new Route(id, name, longName);
-                routeDirectory.put(id, route);
+                routeDirectory.put(id, new Route(id, name, longName));
             }
         }
     }
 
     /**
-     * Reads trips.txt inside the target folder to find representative trip_ids.
-     * Captures two trips per route direction to support bidirectional adjacency list mapping.
+     * Selects one representative trip per route-direction pair from trips.txt.
+     * This limits stop_times.txt parsing to a manageable subset while still capturing
+     * both the outbound and inbound stop sequences for each route.
      */
     private Map<String, String> loadRepresentativeTrips(String folderPath) throws Exception {
-        Map<String, String> tripToRouteMap = new HashMap<>();
-        Set<String> processedRouteDirections = new HashSet<>();
+        Map<String, String> tripToRoute = new HashMap<>();
+        Set<String> seenRouteDirections = new HashSet<>();
 
         ClassPathResource resource = new ClassPathResource(folderPath + "/trips.txt");
 
         try (CSVReader reader = new CSVReader(new InputStreamReader(resource.getInputStream(), StandardCharsets.UTF_8))) {
-            String[] nextLine;
-            reader.skip(1); // Skip header
+            reader.skip(1);
+            String[] row;
+            while ((row = reader.readNext()) != null) {
+                String routeId = row[0].trim();
+                String tripId = row[2].trim();
+                String directionId = row[4].trim();
 
-            while ((nextLine = reader.readNext()) != null) {
-                String routeId = nextLine[0].trim();
-                String tripId = nextLine[2].trim();
-                String directionId = nextLine[4].trim();
-
-                String uniqueRouteDirection = routeId + "_" + directionId;
-
-                if (!processedRouteDirections.contains(uniqueRouteDirection)) {
-                    tripToRouteMap.put(tripId, routeId);
-                    processedRouteDirections.add(uniqueRouteDirection);
-
+                String key = routeId + "_" + directionId;
+                if (seenRouteDirections.add(key)) {
+                    tripToRoute.put(tripId, routeId);
                     routePaths.putIfAbsent(routeId, new LinkedList<>());
                 }
             }
         }
-        return tripToRouteMap;
+        return tripToRoute;
     }
 
     /**
-     * Reads stop_times.txt from the targeted feed folder and builds Linked Lists and Graphs.
+     * Parses stop_times.txt to build route path LinkedLists and the stop adjacency graph.
+     *
+     * <p>Only rows belonging to the representative trips selected by
+     * {@link #loadRepresentativeTrips} are processed.
+     *
+     * <p>Graph edges connect consecutive stops within the same trip.
+     * {@code previousStopId} is reset to null whenever the trip changes to prevent
+     * a spurious edge from the last stop of one trip to the first stop of the next.
      */
-    private void buildGraphsAndLists(String folderPath) throws Exception {
+    private void buildGraphsAndPaths(String folderPath) throws Exception {
         Map<String, String> targetTrips = loadRepresentativeTrips(folderPath);
         ClassPathResource resource = new ClassPathResource(folderPath + "/stop_times.txt");
 
         try (CSVReader reader = new CSVReader(new InputStreamReader(resource.getInputStream(), StandardCharsets.UTF_8))) {
-            String[] nextLine;
-            reader.skip(1); // Skip header
+            reader.skip(1);
 
             String previousStopId = null;
             String currentTripId = null;
 
-            while ((nextLine = reader.readNext()) != null) {
-                String tripId = nextLine[0].trim();
-                String stopId = nextLine[3].trim();
+            String[] row;
+            while ((row = reader.readNext()) != null) {
+                String tripId = row[0].trim();
+                String stopId = row[3].trim();
 
-                // Fast-fail: Skip rows that do not belong to our target representative trips
-                if (!targetTrips.containsKey(tripId)) {
-                    continue;
+                if (!targetTrips.containsKey(tripId)) continue;
+
+                // Reset the previous stop pointer when entering a new trip so we don't
+                // draw a graph edge between the last stop of the old trip and the first
+                // stop of the new one.
+                if (!tripId.equals(currentTripId)) {
+                    previousStopId = null;
+                    currentTripId = tripId;
                 }
 
                 String routeId = targetTrips.get(tripId);
 
-                // 1. Maintain route Linked List sequence
+                // Append to route path, avoiding duplicates at the tail caused by multiple
+                // trips sharing a stop sequence.
                 LinkedList<String> path = routePaths.get(routeId);
                 if (path.isEmpty() || !path.getLast().equals(stopId)) {
                     path.add(stopId);
                 }
 
-                // 2. Build Adjacency Graph mapping connections
-                if (tripId.equals(currentTripId) && previousStopId != null) {
+                // Add directed graph edge from the previous stop to this one.
+                if (previousStopId != null) {
                     stopGraph.computeIfAbsent(previousStopId, k -> new ArrayList<>()).add(stopId);
                 }
 
                 previousStopId = stopId;
-                currentTripId = tripId;
             }
         }
     }
 
-    /**
-     * Searches unified stop directory matching query parameters.
-     */
+    /** Case-insensitive name search across all stops. Returns up to 10 matches. */
     public List<Stop> searchStops(String query) {
         List<Stop> results = new ArrayList<>();
         String lowerQuery = query.toLowerCase();
-
         for (Stop stop : stopDirectory.values()) {
             if (stop.getName().toLowerCase().contains(lowerQuery)) {
                 results.add(stop);
@@ -213,16 +204,13 @@ public class TransitService {
         return results;
     }
 
-    /**
-     * Searches unified route directory matching query parameters.
-     */
+    /** Case-insensitive name search across all routes (short name and long name). Returns up to 10 matches. */
     public List<Route> searchRoutes(String query) {
         List<Route> results = new ArrayList<>();
         String lowerQuery = query.toLowerCase();
-
         for (Route route : routeDirectory.values()) {
-            if (route.getName().toLowerCase().contains(lowerQuery) ||
-                    (route.getLongName() != null && route.getLongName().toLowerCase().contains(lowerQuery))) {
+            if (route.getName().toLowerCase().contains(lowerQuery)
+                    || (route.getLongName() != null && route.getLongName().toLowerCase().contains(lowerQuery))) {
                 results.add(route);
                 if (results.size() >= 10) break;
             }
@@ -233,5 +221,5 @@ public class TransitService {
     public Stop getStopById(String id) { return stopDirectory.get(id); }
     public Route getRouteById(String id) { return routeDirectory.get(id); }
     public LinkedList<String> getRoutePath(String routeId) { return routePaths.get(routeId); }
-    public List<String> getAdjacentStops(String stopId) { return stopGraph.getOrDefault(stopId, new ArrayList<>()); }
+    public List<String> getAdjacentStops(String stopId) { return stopGraph.getOrDefault(stopId, Collections.emptyList()); }
 }
