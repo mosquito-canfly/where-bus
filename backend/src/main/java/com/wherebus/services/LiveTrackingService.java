@@ -15,13 +15,13 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Polls Prasarana's GTFS-Realtime feeds and maintains a merged, thread-safe
- * snapshot of all active vehicle positions.
+ * Polls Prasarana's GTFS-Realtime feeds every 30 seconds and maintains a merged,
+ * thread-safe snapshot of all active vehicle positions.
  *
  * <p><b>Polling strategy:</b> The two feeds are fetched sequentially with a short delay
- * between them to avoid hitting the data.gov.my rate limiter with back-to-back requests
- * in the same scheduler tick. Each feed tracks its own consecutive failure count;
- * on a 429 the feed is skipped for {@code BACKOFF_CYCLES} cycles before retrying.
+ * between them to avoid hitting the data.gov.my rate limiter with back-to-back requests.
+ * Each feed tracks its own consecutive failure count; on a 429 the feed is skipped for
+ * {@code BACKOFF_CYCLES} cycles before retrying.
  *
  * <p><b>Speed derivation:</b> Prasarana's {@code speed} field is broadcast in km/h despite
  * the GTFS-RT spec mandating m/s. The field is converted on read (÷ 3.6). Derived speed
@@ -33,30 +33,22 @@ import java.util.concurrent.atomic.AtomicInteger;
 @Service
 public class LiveTrackingService {
 
-    // Key: vehicleId, Value: latest VehiclePosition.
     private final Map<String, VehiclePosition> activeVehicles = new ConcurrentHashMap<>();
-
-    // Last known [lat, lon, timestamp] per vehicle for derived speed computation.
     private final Map<String, double[]> previousPositions = new ConcurrentHashMap<>();
-
-    // Derived speed in m/s from consecutive position deltas.
     private final Map<String, Double> derivedSpeeds = new ConcurrentHashMap<>();
 
-    // Per-feed consecutive 429 count. Indexed parallel to LIVE_FEED_URLS.
+    // Per-feed backoff counters, indexed parallel to LIVE_FEED_URLS.
     private final AtomicInteger[] feedBackoffCycles = {new AtomicInteger(0), new AtomicInteger(0)};
 
-    // How many 15-second cycles to skip a feed after a 429 before retrying.
-    // 4 cycles = 60 seconds backoff on rate-limit.
-    private static final int BACKOFF_CYCLES = 4;
+    // How many 30-second cycles to skip after a 429 (2 cycles = 60s backoff).
+    private static final int BACKOFF_CYCLES = 2;
 
-    // Delay between fetching the two feeds in the same scheduler tick (ms).
-    // Spreads load and reduces the chance of consecutive requests hitting the rate limiter.
+    // Delay between the two feed fetches to reduce back-to-back rate limit hits.
     private static final long INTER_FEED_DELAY_MS = 3000;
 
-    private static final long STALE_THRESHOLD_MS = 3 * 60 * 1000; // 3 minutes
+    private static final long STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
     private static final double MIN_DERIVED_SPEED_MPS = 0.5;
 
-    // Fallback ~11 km/h. Package-private so EtaCalculationService can reference it.
     static final double DEFAULT_SPEED_MPS = 3.0;
 
     private static final String[] LIVE_FEED_URLS = {
@@ -64,31 +56,24 @@ public class LiveTrackingService {
             "https://api.data.gov.my/gtfs-realtime/vehicle-position/prasarana?category=rapid-bus-mrtfeeder"
     };
 
-    /**
-     * Fetches both Prasarana feeds sequentially every 15 seconds.
-     * Feeds that returned a 429 on the previous cycle are skipped and retried after
-     * {@code BACKOFF_CYCLES} cycles (60 seconds at the default rate).
-     */
-    @Scheduled(fixedRate = 15000)
+    /** Fetches both Prasarana feeds sequentially every 30 seconds. */
+    @Scheduled(fixedRate = 30000)
     public void refreshVehiclePositions() {
         int totalIngested = 0;
         long now = System.currentTimeMillis();
 
         for (int i = 0; i < LIVE_FEED_URLS.length; i++) {
-            // Skip this feed if it is in a backoff window.
             if (feedBackoffCycles[i].get() > 0) {
                 int remaining = feedBackoffCycles[i].decrementAndGet();
                 System.out.println("⏭️  Skipping feed (backoff, " + remaining + " cycles left): " + LIVE_FEED_URLS[i]);
                 continue;
             }
 
-            // Stagger requests to avoid back-to-back hits on the rate limiter.
             if (i > 0) {
                 try { Thread.sleep(INTER_FEED_DELAY_MS); } catch (InterruptedException ignored) {}
             }
 
-            int ingested = fetchFeed(LIVE_FEED_URLS[i], feedBackoffCycles[i]);
-            totalIngested += ingested;
+            totalIngested += fetchFeed(LIVE_FEED_URLS[i], feedBackoffCycles[i]);
         }
 
         evictStaleVehicles(now);
@@ -96,13 +81,6 @@ public class LiveTrackingService {
                 + activeVehicles.size() + " active.");
     }
 
-    /**
-     * Fetches and parses a single GTFS-RT feed URL.
-     *
-     * @param feedUrl      The endpoint to fetch.
-     * @param backoffCount The feed's backoff counter — set to BACKOFF_CYCLES on 429.
-     * @return Number of vehicle positions ingested from this feed.
-     */
     private int fetchFeed(String feedUrl, AtomicInteger backoffCount) {
         int count = 0;
         try {
@@ -114,7 +92,6 @@ public class LiveTrackingService {
             connection.setReadTimeout(8000);
 
             int responseCode = connection.getResponseCode();
-
             if (responseCode == HttpURLConnection.HTTP_OK) {
                 try (InputStream inputStream = connection.getInputStream()) {
                     FeedMessage feed = FeedMessage.parseFrom(inputStream);
@@ -129,26 +106,19 @@ public class LiveTrackingService {
                 }
             } else if (responseCode == 429) {
                 backoffCount.set(BACKOFF_CYCLES);
-                System.err.println("⚠️  429 rate-limited on: " + feedUrl
+                System.err.println("⚠️  429 rate-limited: " + feedUrl
                         + " — backing off for " + BACKOFF_CYCLES + " cycles ("
-                        + (BACKOFF_CYCLES * 15) + "s).");
+                        + (BACKOFF_CYCLES * 30) + "s).");
             } else {
                 System.err.println("⚠️  Feed returned " + responseCode + ": " + feedUrl);
             }
-
             connection.disconnect();
-
         } catch (Exception e) {
             System.err.println("❌ Failed to fetch [" + feedUrl + "]: " + e.getMessage());
         }
         return count;
     }
 
-    /**
-     * Computes derived speed from the delta between the previous and current position.
-     * Only stored if the resulting speed is above {@code MIN_DERIVED_SPEED_MPS} — below
-     * this the bus is considered stationary and the fallback should be used instead.
-     */
     private void updateDerivedSpeed(String vehicleId, VehiclePosition vehicle) {
         if (!vehicle.hasTimestamp()) return;
 
@@ -162,7 +132,6 @@ public class LiveTrackingService {
             if (deltaSeconds > 0) {
                 double distanceMeters = haversineDistance(prev[0], prev[1], currLat, currLon);
                 double speedMps = distanceMeters / deltaSeconds;
-
                 if (speedMps >= MIN_DERIVED_SPEED_MPS) {
                     derivedSpeeds.put(vehicleId, speedMps);
                 } else {
@@ -170,11 +139,9 @@ public class LiveTrackingService {
                 }
             }
         }
-
         previousPositions.put(vehicleId, new double[]{currLat, currLon, currTimestamp});
     }
 
-    /** Removes vehicles whose last timestamp is older than STALE_THRESHOLD_MS. */
     private void evictStaleVehicles(long now) {
         long staleBeforeMs = now - STALE_THRESHOLD_MS;
         activeVehicles.entrySet().removeIf(entry -> {
@@ -190,14 +157,33 @@ public class LiveTrackingService {
     }
 
     /**
+     * Checks whether a queried route ID matches a broadcasted route ID.
+     *
+     * <p>Handles the following known Prasarana quirks:
+     * <ul>
+     *   <li>Case-insensitive exact match.</li>
+     *   <li>Trailing-"0" appended to query: "T789" matches broadcast "T7890".</li>
+     *   <li>Trailing-"0" on broadcast: "T7890" query matches broadcast "T789".</li>
+     *   <li>Direction suffix on broadcast: "T815" query matches "T815 Outbound".</li>
+     * </ul>
+     *
+     * <p>This method is {@code public static} so {@code EtaCalculationService} can use
+     * the same matching logic without duplicating it or creating a circular dependency.
+     */
+    public static boolean matchesRouteId(String queryId, String broadcastedId) {
+        if (queryId.equalsIgnoreCase(broadcastedId)) return true;
+        if ((queryId + "0").equalsIgnoreCase(broadcastedId)) return true;
+        if (queryId.endsWith("0")
+                && queryId.substring(0, queryId.length() - 1).equalsIgnoreCase(broadcastedId)) return true;
+        if (broadcastedId.toLowerCase().startsWith(queryId.toLowerCase() + " ")) return true;
+        return false;
+    }
+
+    /**
      * Returns the best available speed estimate for a vehicle in m/s.
      *
-     * <p>Priority:
-     * <ol>
-     *   <li>Derived speed from consecutive position deltas.</li>
-     *   <li>Feed {@code speed} field ÷ 3.6 — Prasarana broadcasts km/h despite the spec.</li>
-     *   <li>{@code DEFAULT_SPEED_MPS} fallback (~11 km/h).</li>
-     * </ol>
+     * <p>Priority: derived (position deltas) → feed speed ÷ 3.6 (Prasarana broadcasts km/h)
+     * → DEFAULT_SPEED_MPS fallback (~11 km/h).
      */
     public double getSpeedMps(String vehicleId, VehiclePosition vehicle) {
         Double derived = derivedSpeeds.get(vehicleId);
@@ -209,27 +195,16 @@ public class LiveTrackingService {
                 return feedSpeedKmh / 3.6;
             }
         }
-
         return DEFAULT_SPEED_MPS;
     }
 
-    /**
-     * Returns all vehicles currently on the given route with GPS coordinates and direction.
-     *
-     * <p>Prasarana broadcasts route IDs that match the static route_id in routes.txt exactly
-     * for most routes. The trailing-"0" variant is also checked to handle edge cases where
-     * the broadcast ID has an extra suffix (e.g. frontend sends "T789", feed broadcasts "T7890").
-     * Note: if the static route_id is already "T7890", pass "T7890" — not "T789".
-     */
+    /** Returns vehicles currently on the given route with GPS coordinates and direction. */
     public List<Map<String, Object>> getVehiclesByRoute(String routeId) {
         List<Map<String, Object>> vehicles = new ArrayList<>();
-
         for (Map.Entry<String, VehiclePosition> entry : activeVehicles.entrySet()) {
             VehiclePosition v = entry.getValue();
             if (!v.hasTrip()) continue;
-
-            String broadcastedId = v.getTrip().getRouteId();
-            if (!matchesRouteId(routeId, broadcastedId)) continue;
+            if (!matchesRouteId(routeId, v.getTrip().getRouteId())) continue;
 
             int directionId = v.getTrip().hasDirectionId() ? v.getTrip().getDirectionId() : 0;
 
@@ -242,33 +217,9 @@ public class LiveTrackingService {
                     ? v.getVehicle().getLicensePlate() : entry.getKey());
             vehicle.put("directionId", directionId);
             vehicle.put("directionLabel", directionId == 0 ? "outbound" : "inbound");
-
             vehicles.add(vehicle);
         }
-
         return vehicles;
-    }
-
-    /**
-     * Checks whether a queried route ID matches a broadcasted route ID.
-     *
-     * <p>Handles two known Prasarana ID quirks:
-     * <ul>
-     *   <li>Case-insensitive match (some IDs differ in casing between feeds).</li>
-     *   <li>Trailing-"0" suffix: if the queried ID has a "0" appended relative to the
-     *       broadcast (e.g. query "T7890" vs broadcast "T789"), or vice versa.</li>
-     *   <li>Space-and-direction suffixes like "T155 Outbound" — matched by checking if
-     *       the broadcast ID starts with the queried ID.</li>
-     * </ul>
-     */
-    private boolean matchesRouteId(String queryId, String broadcastedId) {
-        if (queryId.equalsIgnoreCase(broadcastedId)) return true;
-        if ((queryId + "0").equalsIgnoreCase(broadcastedId)) return true;
-        if (queryId.endsWith("0") && queryId.substring(0, queryId.length() - 1)
-                .equalsIgnoreCase(broadcastedId)) return true;
-        // Handle "T155 Outbound" style suffixes.
-        if (broadcastedId.toLowerCase().startsWith(queryId.toLowerCase() + " ")) return true;
-        return false;
     }
 
     /** Returns a debug snapshot of the current fleet state. */
@@ -280,7 +231,6 @@ public class LiveTrackingService {
             VehiclePosition v = entry.getValue();
             String routeId = v.hasTrip() ? v.getTrip().getRouteId() : "NO_ROUTE_ID";
             activeRouteIds.add(routeId);
-
             if (samples.size() < 5) {
                 Map<String, Object> sample = new HashMap<>();
                 sample.put("vehicleId", entry.getKey());

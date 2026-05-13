@@ -9,27 +9,35 @@ import java.util.*;
 /**
  * Computes real-time ETAs for buses approaching a stop.
  *
- * <p><b>Distance:</b> Uses pre-computed cumulative road distances from {@code TransitService}
- * (derived from shape polylines) rather than straight-line Haversine distance. The bus's
- * current GPS position is projected onto the shape to get its arc-length from the route start;
- * the target stop's arc-length is looked up from the pre-computed table. The difference is the
- * actual road distance remaining.
+ * <p><b>Vehicle matching:</b> Uses {@link LiveTrackingService#matchesRouteId} — the same
+ * logic as the /vehicles endpoint — so both endpoints always return results for the same
+ * set of buses.
  *
- * <p><b>hasPassed():</b> Compares the bus's projected arc-length against the target stop's
- * arc-length. A bus is considered to have passed when its position on the shape is at or
- * beyond the stop's position. This is geometrically accurate and does not rely on the
- * closest-stop index heuristic.
+ * <p><b>Static route ID resolution:</b> The route ID the caller passes (and Prasarana
+ * broadcasts) may differ from the internal GTFS route_id used as the key in our static
+ * data (e.g. Prasarana broadcasts "T815" but routes.txt stores "30000016"). Before looking
+ * up route paths or stop distances, we resolve the correct static key by trying the query
+ * ID, the broadcasted ID, and both with a trailing "0" stripped.
  *
- * <p><b>Speed:</b> Uses {@code LiveTrackingService.getSpeedMps()}, which prefers derived speed
- * (from consecutive position deltas) over the feed's speed field. Prasarana's feed broadcasts
- * speed in km/h despite the GTFS-RT spec mandating m/s; the conversion is handled in
- * {@code LiveTrackingService}.
+ * <p><b>Distance:</b> Uses pre-computed cumulative road distances from shape polylines where
+ * available. Falls back to Haversine × road correction factor so the endpoint always returns
+ * results even without shape coverage for a route.
+ *
+ * <p><b>hasPassed():</b> Compares cumulative road arc-lengths along the shape. Falls back
+ * to no filtering when shape data is unavailable, preferring a slightly inaccurate result
+ * over silently empty responses.
+ *
+ * <p><b>Speed:</b> Delegates entirely to {@link LiveTrackingService#getSpeedMps}.
  */
 @Service
 public class EtaCalculationService {
 
     private final TransitService transitService;
     private final LiveTrackingService liveTrackingService;
+
+    // Fallback multiplier when shape-based road distance is unavailable.
+    // KL's urban road geometry adds roughly 40% over crow-flies distance.
+    private static final double HAVERSINE_ROAD_FACTOR = 1.4;
 
     public EtaCalculationService(TransitService transitService, LiveTrackingService liveTrackingService) {
         this.transitService = transitService;
@@ -38,54 +46,80 @@ public class EtaCalculationService {
 
     /**
      * Returns all active buses approaching the target stop on the given route,
-     * sorted by ascending ETA. Buses that have already passed the stop are excluded.
+     * sorted by ascending ETA. Buses that have already passed the stop are excluded
+     * when shape data is available.
      *
-     * @param routeId      Public route ID (e.g. "T789"). Trailing-zero matching handled internally.
-     * @param targetStopId Stop ID as defined in stops.txt (e.g. "1001410").
+     * @param routeId      Route ID as passed by the frontend. May be the internal GTFS
+     *                     route_id (e.g. "30000016") or the broadcasted public ID ("T815").
+     *                     Both are resolved internally.
+     * @param targetStopId Stop ID as defined in stops.txt (e.g. "12000802").
      * @return Ordered list of arrival predictions, or an empty list if the stop is unknown.
      */
     public List<Map<String, Object>> getArrivalsForStop(String routeId, String targetStopId) {
         Stop targetStop = transitService.getStopById(targetStopId);
-        if (targetStop == null) return Collections.emptyList();
+        if (targetStop == null) {
+            System.err.println("⚠️  ETA: stop not found: " + targetStopId);
+            return Collections.emptyList();
+        }
 
         PriorityQueue<ArrivalPrediction> heap = new PriorityQueue<>(
                 Comparator.comparingInt(ArrivalPrediction::getSecondsRemaining)
         );
+
+        int totalOnRoute = 0;
+        int droppedPassed = 0;
+        int usedFallback = 0;
 
         for (Map.Entry<String, VehiclePosition> entry : liveTrackingService.getActiveVehicles().entrySet()) {
             VehiclePosition vehicle = entry.getValue();
             if (!vehicle.hasTrip()) continue;
 
             String broadcastedRouteId = vehicle.getTrip().getRouteId();
-            boolean matchesRoute = routeId.equalsIgnoreCase(broadcastedRouteId)
-                    || (routeId + "0").equalsIgnoreCase(broadcastedRouteId);
-            if (!matchesRoute) continue;
+            if (!LiveTrackingService.matchesRouteId(routeId, broadcastedRouteId)) continue;
 
+            totalOnRoute++;
             int directionId = vehicle.getTrip().hasDirectionId() ? vehicle.getTrip().getDirectionId() : 0;
             double busLat = vehicle.getPosition().getLatitude();
             double busLon = vehicle.getPosition().getLongitude();
 
-            // Get the stop's pre-computed cumulative distance and the bus's projected distance.
-            RoadPosition busPosition = projectOntoRoute(routeId, directionId, busLat, busLon);
-            RoadPosition targetPosition = getStopPosition(routeId, directionId, targetStopId);
+            // Resolve the key that actually exists in our static routePaths map.
+            // The caller may pass the internal GTFS ID or the broadcasted public ID —
+            // we try both to find whichever was used during static data loading.
+            String staticRouteId = resolveStaticRouteId(routeId, broadcastedRouteId, directionId);
 
-            if (busPosition == null || targetPosition == null) continue;
+            RoadPosition busPosition = projectOntoRoute(staticRouteId, directionId, busLat, busLon);
+            RoadPosition targetPosition = getStopPosition(staticRouteId, directionId, targetStopId);
 
-            // Bus has passed the stop — exclude from results.
-            if (busPosition.cumulativeDistKm >= targetPosition.cumulativeDistKm) continue;
+            double roadDistanceMeters;
 
-            double roadDistanceKm = targetPosition.cumulativeDistKm - busPosition.cumulativeDistKm;
-            double roadDistanceMeters = roadDistanceKm * 1000.0;
+            if (busPosition == null || targetPosition == null) {
+                // Shape data not available for this route-direction — fall back to Haversine.
+                usedFallback++;
+                double straightLineMeters = haversineDistanceKm(
+                        busLat, busLon, targetStop.getLatitude(), targetStop.getLongitude()) * 1000.0;
+                roadDistanceMeters = straightLineMeters * HAVERSINE_ROAD_FACTOR;
+            } else {
+                if (busPosition.cumulativeDistKm >= targetPosition.cumulativeDistKm) {
+                    droppedPassed++;
+                    continue;
+                }
+                roadDistanceMeters = (targetPosition.cumulativeDistKm - busPosition.cumulativeDistKm) * 1000.0;
+            }
 
             double speedMps = liveTrackingService.getSpeedMps(entry.getKey(), vehicle);
             int secondsRemaining = (int) (roadDistanceMeters / speedMps);
-
             String licensePlate = vehicle.getVehicle().hasLicensePlate()
                     ? vehicle.getVehicle().getLicensePlate() : entry.getKey();
 
             heap.offer(new ArrivalPrediction(
                     entry.getKey(), licensePlate, roadDistanceMeters, secondsRemaining, directionId));
         }
+
+        System.out.println("ℹ️  ETA route=" + routeId + " stop=" + targetStopId
+                + " → onRoute=" + totalOnRoute
+                + " passed=" + droppedPassed
+                + " fallback=" + usedFallback
+                + " returning=" + heap.size());
 
         List<Map<String, Object>> arrivals = new ArrayList<>();
         while (!heap.isEmpty()) {
@@ -105,8 +139,40 @@ public class EtaCalculationService {
     }
 
     /**
-     * Looks up the pre-computed cumulative road distance for a specific stop in a route-direction.
-     * Returns null if the stop is not found in this direction's path.
+     * Resolves the static route ID key used in routePaths and stopCumulativeDistances.
+     *
+     * <p>Routes are keyed by their GTFS route_id from routes.txt (e.g. "30000016" for MRT
+     * Feeder, "T7890" for rapid-bus-kl). The caller may pass either the internal ID or the
+     * broadcasted public ID. This method tries four candidates in order:
+     * <ol>
+     *   <li>The caller's routeId as-is.</li>
+     *   <li>The broadcasted route ID as-is (most reliable for MRT Feeder routes where the
+     *       static ID and broadcast ID differ entirely).</li>
+     *   <li>The caller's routeId with a trailing "0" stripped.</li>
+     *   <li>The broadcasted ID with a trailing "0" stripped.</li>
+     * </ol>
+     * Returns the first candidate that has a matching entry in routePaths, or the caller's
+     * routeId unchanged as a last resort (will produce null positions, triggering fallback).
+     */
+    private String resolveStaticRouteId(String routeId, String broadcastedRouteId, int directionId) {
+        String[] candidates = {
+                routeId,
+                broadcastedRouteId,
+                routeId.endsWith("0") ? routeId.substring(0, routeId.length() - 1) : null,
+                broadcastedRouteId.endsWith("0") ? broadcastedRouteId.substring(0, broadcastedRouteId.length() - 1) : null
+        };
+
+        for (String candidate : candidates) {
+            if (candidate != null && transitService.getRoutePath(candidate, directionId) != null) {
+                return candidate;
+            }
+        }
+        return routeId;
+    }
+
+    /**
+     * Looks up the pre-computed cumulative road distance for a stop in the given route-direction.
+     * Returns null if the stop is not found in this direction's path or distances are unavailable.
      */
     private RoadPosition getStopPosition(String routeId, int directionId, String stopId) {
         LinkedList<String> path = transitService.getRoutePath(routeId, directionId);
@@ -121,15 +187,8 @@ public class EtaCalculationService {
     }
 
     /**
-     * Projects a GPS coordinate onto the route's stop sequence and returns the cumulative
-     * road distance of the nearest stop to the bus's position.
-     *
-     * <p>We find the stop in the route path whose coordinates are closest to the bus GPS,
-     * then return that stop's pre-computed cumulative distance. This is an approximation —
-     * the bus may be between two stops — but it is directionally correct for hasPassed()
-     * and acceptable for ETA given the 15-second feed refresh interval.
-     *
-     * <p>Returns null if the route path or distances are unavailable.
+     * Projects a GPS coordinate onto the route by finding the nearest stop in the path
+     * and returning its pre-computed cumulative distance from the route start.
      */
     private RoadPosition projectOntoRoute(String routeId, int directionId, double busLat, double busLon) {
         LinkedList<String> path = transitService.getRoutePath(routeId, directionId);
@@ -169,13 +228,11 @@ public class EtaCalculationService {
         return (totalSeconds / 60) + " min";
     }
 
-    /** Wraps a cumulative road distance value from the route start. */
     private static class RoadPosition {
         final double cumulativeDistKm;
         RoadPosition(double cumulativeDistKm) { this.cumulativeDistKm = cumulativeDistKm; }
     }
 
-    /** Internal heap entry for a single bus's predicted arrival. */
     private static class ArrivalPrediction {
         private final String vehicleId;
         private final String licensePlate;
