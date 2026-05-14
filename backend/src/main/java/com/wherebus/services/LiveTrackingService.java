@@ -28,15 +28,9 @@ import java.util.concurrent.atomic.AtomicInteger;
  * in backoff), the last known positions are preserved so ETA and vehicle endpoints
  * continue returning results rather than an empty fleet.
  *
- * <p><b>Speed derivation:</b> Prasarana's {@code speed} field is broadcast in km/h despite
- * the GTFS-RT spec mandating m/s. The field is converted on read (÷ 3.6). Derived speed
- * from consecutive position deltas is preferred and more reliable. Two guards are applied:
- * <ul>
- *   <li>Displacements below {@code MIN_MOVEMENT_METERS} are treated as GPS jitter and
- *       skipped — they produce near-zero derived speeds that would inflate ETAs.</li>
- *   <li>Derived speed is capped at {@code MAX_DERIVED_SPEED_MPS} — values above this
- *       indicate a GPS position jump rather than genuine movement.</li>
- * </ul>
+ * <p><b>Speed:</b> Prasarana broadcasts the {@code speed} field in km/h. Values are
+ * converted to m/s (÷ 3.6) before use. If the field is absent or outside a plausible
+ * range, {@code DEFAULT_SPEED_MPS} (~11 km/h) is used as a fallback.
  *
  * <p><b>Stale eviction:</b> Vehicles not updated within {@code STALE_THRESHOLD_MS}
  * (10 minutes) are removed when a healthy feed cycle runs.
@@ -45,8 +39,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class LiveTrackingService {
 
     private final Map<String, VehiclePosition> activeVehicles = new ConcurrentHashMap<>();
-    private final Map<String, double[]> previousPositions = new ConcurrentHashMap<>();
-    private final Map<String, Double> derivedSpeeds = new ConcurrentHashMap<>();
 
     private final AtomicInteger[] feedBackoffCycles = {new AtomicInteger(0), new AtomicInteger(0)};
 
@@ -61,16 +53,7 @@ public class LiveTrackingService {
     // blackout where no new data arrives but the buses haven't actually stopped running.
     private static final long STALE_THRESHOLD_MS = 10 * 60 * 1000;
 
-    // Displacements below this are treated as GPS jitter, not real movement.
-    private static final double MIN_MOVEMENT_METERS = 20.0;
-
-    // Below this the bus is considered stationary — use fallback speed instead.
-    private static final double MIN_DERIVED_SPEED_MPS = 0.5;
-
-    // Above this the position delta is a GPS jump, not genuine movement.
-    // 15 m/s ≈ 54 km/h — a safe ceiling for a KL city bus.
-    private static final double MAX_DERIVED_SPEED_MPS = 15.0;
-
+    // Fallback when the feed does not provide a speed value (~11 km/h).
     static final double DEFAULT_SPEED_MPS = 3.0;
 
     private static final String[] LIVE_FEED_URLS = {
@@ -127,7 +110,6 @@ public class LiveTrackingService {
                         if (!entity.hasVehicle()) continue;
                         VehiclePosition vehicle = entity.getVehicle();
                         String vehicleId = vehicle.getVehicle().getId();
-                        updateDerivedSpeed(vehicleId, vehicle);
                         activeVehicles.put(vehicleId, vehicle);
                         count++;
                     }
@@ -159,79 +141,27 @@ public class LiveTrackingService {
         return count;
     }
 
-    /**
-     * Computes derived speed from the delta between the previous and current position.
-     *
-     * <p>Skipped entirely if displacement is below {@code MIN_MOVEMENT_METERS} — this
-     * filters GPS jitter where the reported position oscillates a few metres around a
-     * fixed point, which would otherwise produce near-zero derived speeds.
-     *
-     * <p>Derived speed is capped at {@code MAX_DERIVED_SPEED_MPS}. Values above this
-     * indicate a GPS position jump (common when a feed update skips several cycles) rather
-     * than genuine high-speed movement, and would otherwise produce unrealistically low ETAs.
-     */
-    private void updateDerivedSpeed(String vehicleId, VehiclePosition vehicle) {
-        if (!vehicle.hasTimestamp()) return;
-
-        double currLat = vehicle.getPosition().getLatitude();
-        double currLon = vehicle.getPosition().getLongitude();
-        long currTimestamp = vehicle.getTimestamp();
-
-        double[] prev = previousPositions.get(vehicleId);
-        if (prev != null) {
-            long deltaSeconds = currTimestamp - (long) prev[2];
-            if (deltaSeconds > 0) {
-                double distanceMeters = haversineDistance(prev[0], prev[1], currLat, currLon);
-
-                // Skip if movement is below the jitter threshold.
-                if (distanceMeters < MIN_MOVEMENT_METERS) {
-                    previousPositions.put(vehicleId, new double[]{currLat, currLon, currTimestamp});
-                    return;
-                }
-
-                double speedMps = distanceMeters / deltaSeconds;
-
-                if (speedMps < MIN_DERIVED_SPEED_MPS) {
-                    // Bus is stationary — remove stale derived speed so the fallback is used.
-                    derivedSpeeds.remove(vehicleId);
-                } else {
-                    // Clamp to plausible city bus ceiling before storing.
-                    derivedSpeeds.put(vehicleId, Math.min(speedMps, MAX_DERIVED_SPEED_MPS));
-                }
-            }
-        }
-
-        previousPositions.put(vehicleId, new double[]{currLat, currLon, currTimestamp});
-    }
-
     private void evictStaleVehicles(long now) {
         long staleBeforeMs = now - STALE_THRESHOLD_MS;
         activeVehicles.entrySet().removeIf(entry -> {
             VehiclePosition v = entry.getValue();
             if (!v.hasTimestamp()) return false;
-            boolean stale = (v.getTimestamp() * 1000L) < staleBeforeMs;
-            if (stale) {
-                previousPositions.remove(entry.getKey());
-                derivedSpeeds.remove(entry.getKey());
-            }
-            return stale;
+            return (v.getTimestamp() * 1000L) < staleBeforeMs;
         });
     }
 
     /**
      * Returns the best available speed estimate for a vehicle in m/s.
      *
-     * <p>Priority: derived (position deltas, clamped to MAX_DERIVED_SPEED_MPS)
-     * → feed speed ÷ 3.6 (Prasarana broadcasts km/h) → DEFAULT_SPEED_MPS fallback.
+     * <p>Uses the feed's {@code speed} field, which Prasarana broadcasts in km/h.
+     * Converted to m/s by dividing by 3.6. If the field is absent or outside a
+     * plausible range (1–120 km/h), falls back to {@code DEFAULT_SPEED_MPS} (~11 km/h).
      */
     public double getSpeedMps(String vehicleId, VehiclePosition vehicle) {
-        Double derived = derivedSpeeds.get(vehicleId);
-        if (derived != null) return derived;
-
         if (vehicle.getPosition().hasSpeed()) {
             double feedSpeedKmh = vehicle.getPosition().getSpeed();
             if (feedSpeedKmh > 1.0 && feedSpeedKmh < 120.0) {
-                return Math.min(feedSpeedKmh / 3.6, MAX_DERIVED_SPEED_MPS);
+                return feedSpeedKmh / 3.6;
             }
         }
         return DEFAULT_SPEED_MPS;
@@ -299,7 +229,7 @@ public class LiveTrackingService {
                 sample.put("broadcastedRouteId", routeId);
                 sample.put("lat", v.getPosition().getLatitude());
                 sample.put("lon", v.getPosition().getLongitude());
-                sample.put("derivedSpeedMps", derivedSpeeds.get(entry.getKey()));
+                sample.put("feedSpeedKmh", v.getPosition().hasSpeed() ? v.getPosition().getSpeed() : null);
                 samples.add(sample);
             }
         }
@@ -309,16 +239,6 @@ public class LiveTrackingService {
         snapshot.put("uniqueRoutesActiveNow", activeRouteIds);
         snapshot.put("sampleVehicleData", samples);
         return snapshot;
-    }
-
-    private double haversineDistance(double lat1, double lon1, double lat2, double lon2) {
-        final int R = 6371000;
-        double dLat = Math.toRadians(lat2 - lat1);
-        double dLon = Math.toRadians(lon2 - lon1);
-        double a = Math.sin(dLat / 2) * Math.sin(dLat / 2)
-                + Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2))
-                * Math.sin(dLon / 2) * Math.sin(dLon / 2);
-        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     }
 
     public VehiclePosition getVehicleById(String vehicleId) { return activeVehicles.get(vehicleId); }
