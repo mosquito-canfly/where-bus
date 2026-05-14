@@ -16,8 +16,177 @@ const MinimalGrayIcon = L.divIcon({
   iconAnchor: [7, 7],
 });
 
+// ---------------------------------------------------------------------------
+// Live vehicle types + helpers
+// ---------------------------------------------------------------------------
+
+interface Vehicle {
+  vehicleId: string;
+  latitude: number;
+  longitude: number;
+  bearing: number | null;
+  directionId: number;
+  directionLabel: string;
+  licensePlate: string;
+}
+
 /**
- * Handles smooth camera animations and applies dynamic bounding boxes 
+ * Projects point Q onto segment P1→P2 and returns t ∈ [0, 1] where the
+ * closest point lies (0 = P1, 1 = P2). Works in flat lat/lng space — fine
+ * for the short segments between consecutive stops.
+ */
+function projectOntoSegment(
+  qLat: number, qLng: number,
+  p1Lat: number, p1Lng: number,
+  p2Lat: number, p2Lng: number,
+): number {
+  const dLat = p2Lat - p1Lat;
+  const dLng = p2Lng - p1Lng;
+  const lenSq = dLat * dLat + dLng * dLng;
+  if (lenSq === 0) return 0;
+  return Math.max(0, Math.min(1,
+    ((qLat - p1Lat) * dLat + (qLng - p1Lng) * dLng) / lenSq,
+  ));
+}
+
+/**
+ * Returns the index i of the routeStops segment [i, i+1] whose closest point
+ * to (busLat, busLng) is nearest. Uses exact point-to-segment distance so
+ * both snapping and heading always reference the same segment.
+ */
+function findNearestSegmentIdx(busLat: number, busLng: number, routeStops: Stop[]): number {
+  let minDist = Infinity;
+  let bestIdx = 0;
+  for (let i = 0; i < routeStops.length - 1; i++) {
+    const t = projectOntoSegment(
+      busLat, busLng,
+      routeStops[i].latitude,     routeStops[i].longitude,
+      routeStops[i + 1].latitude, routeStops[i + 1].longitude,
+    );
+    const snapLat = routeStops[i].latitude     + t * (routeStops[i + 1].latitude     - routeStops[i].latitude);
+    const snapLng = routeStops[i].longitude    + t * (routeStops[i + 1].longitude    - routeStops[i].longitude);
+    const d = Math.hypot(busLat - snapLat, busLng - snapLng);
+    if (d < minDist) { minDist = d; bestIdx = i; }
+  }
+  return bestIdx;
+}
+
+/**
+ * Snaps a raw GPS position onto the nearest point of the routeStops polyline.
+ * Returns the raw position unchanged when routeStops has fewer than 2 entries.
+ */
+function snapToRoute(
+  busLat: number,
+  busLng: number,
+  routeStops: Stop[],
+): { lat: number; lng: number } {
+  if (routeStops.length < 2) return { lat: busLat, lng: busLng };
+  const i = findNearestSegmentIdx(busLat, busLng, routeStops);
+  const t = projectOntoSegment(
+    busLat, busLng,
+    routeStops[i].latitude,     routeStops[i].longitude,
+    routeStops[i + 1].latitude, routeStops[i + 1].longitude,
+  );
+  return {
+    lat: routeStops[i].latitude  + t * (routeStops[i + 1].latitude  - routeStops[i].latitude),
+    lng: routeStops[i].longitude + t * (routeStops[i + 1].longitude - routeStops[i].longitude),
+  };
+}
+
+/**
+ * Returns the compass bearing (0–360°, clockwise from North) the bus is
+ * heading, derived from the nearest segment of the route-stop polyline.
+ * Prefers the feed's bearing when non-null. Returns null if routeStops < 2.
+ * routeStops is in outbound order; inbound is flipped 180°.
+ */
+function getHeadingForBus(
+  busLat: number,
+  busLng: number,
+  routeStops: Stop[],
+  directionId: number,
+  feedBearing: number | null,
+): number | null {
+  if (feedBearing !== null) return feedBearing;
+  if (routeStops.length < 2) return null;
+
+  // Use the same segment-finding logic as snapToRoute so heading and snapped
+  // position are always derived from the same polyline segment.
+  const bestIdx = findNearestSegmentIdx(busLat, busLng, routeStops);
+
+  // Haversine forward bearing of that segment
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const φ1 = toRad(routeStops[bestIdx].latitude);
+  const φ2 = toRad(routeStops[bestIdx + 1].latitude);
+  const Δλ = toRad(routeStops[bestIdx + 1].longitude - routeStops[bestIdx].longitude);
+  const y  = Math.sin(Δλ) * Math.cos(φ2);
+  const x  = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
+  let bearing = (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+
+  if (directionId === 1) bearing = (bearing + 180) % 360;
+  return bearing;
+}
+
+// Body colours — both clearly grey, distinguishable from each other.
+const BUS_COLORS = {
+  outbound: '#374151', // gray-700 — darker grey
+  inbound:  '#6B7280', // gray-500 — lighter grey
+};
+
+/**
+ * Builds a Leaflet DivIcon with a side-view bus silhouette (faces RIGHT by
+ * default — front cabin and windshield on the right, matching the reference).
+ * Flips horizontally to face travel direction:
+ *   heading null or ≤ 180 (eastward) → face right (default, scaleX(1))
+ *   heading > 180          (westward) → face left  (scaleX(-1))
+ *
+ * SVG layout (viewBox 0 0 96 64, facing right):
+ *   rear body (left) at lower roof | raised front cabin (right) | large angled
+ *   windshield | 3 square windows | wheel-arch cutouts | 2 wheels with hubs
+ */
+function createBusIcon(heading: number | null, directionId: number): L.DivIcon {
+  const fill  = directionId === 0 ? BUS_COLORS.outbound : BUS_COLORS.inbound;
+  // Front is RIGHT by default; flip for westward travel
+  const flipX = heading !== null && heading > 180 ? -1 : 1;
+
+  // viewBox 0 0 80 50, rendered at 40×25 px. Front = right side.
+  // Minimal design: rounded-rect body, 3 side windows, 2 wheels with hub dot.
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 50" width="40" height="25">
+
+    <!-- Body -->
+    <rect x="1" y="2" width="78" height="30" rx="5"
+          fill="${fill}" stroke="rgba(255,255,255,0.5)" stroke-width="1.5"/>
+
+    <!-- 3 side windows (rear → front) -->
+    <rect x="5"  y="7" width="14" height="12" rx="2" fill="rgba(255,255,255,0.75)"/>
+    <rect x="23" y="7" width="14" height="12" rx="2" fill="rgba(255,255,255,0.75)"/>
+    <rect x="41" y="7" width="14" height="12" rx="2" fill="rgba(255,255,255,0.75)"/>
+
+    <!-- Rear wheel + hub -->
+    <circle cx="17" cy="38" r="8" fill="${fill}" stroke="rgba(255,255,255,0.5)" stroke-width="1.5"/>
+    <circle cx="17" cy="38" r="2.5" fill="rgba(255,255,255,0.6)"/>
+
+    <!-- Front wheel + hub -->
+    <circle cx="63" cy="38" r="8" fill="${fill}" stroke="rgba(255,255,255,0.5)" stroke-width="1.5"/>
+    <circle cx="63" cy="38" r="2.5" fill="rgba(255,255,255,0.6)"/>
+
+  </svg>`;
+
+  return L.divIcon({
+    className: 'bg-transparent',
+    html: `<div style="
+      width:40px; height:40px;
+      display:flex; align-items:center; justify-content:center;
+      transform:scaleX(${flipX});
+      transform-origin:center;
+      filter:drop-shadow(0 2px 5px rgba(0,0,0,0.35));
+    ">${svg}</div>`,
+    iconSize:   [40, 40],
+    iconAnchor: [20, 20],
+  });
+}
+
+/**
+ * Handles smooth camera animations and applies dynamic bounding boxes
  * and offsets so the UI never covers the active target.
  */
 function MapUpdater({ 
@@ -137,6 +306,32 @@ interface LiveMapProps {
 export default function LiveMap({ selectedStop, selectedRoute, routeStops, onStopClick }: LiveMapProps) {
   const [userLocation, setUserLocation] = useState<[number, number]>(FSKTM_POSITION);
   const [hasUserLocation, setHasUserLocation] = useState(false);
+  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+
+  // Poll live vehicle positions every 15 s while a route is selected.
+  // setVehicles is only called inside the async callback to satisfy
+  // the react-hooks/set-state-in-effect lint rule.
+  useEffect(() => {
+    if (!selectedRoute) return;
+
+    let cancelled = false;
+    const fetchVehicles = async () => {
+      try {
+        const res = await fetch(
+          `/api/transit/vehicles?routeId=${encodeURIComponent(selectedRoute.name)}`
+        );
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data: Vehicle[] = await res.json();
+        if (!cancelled) setVehicles(data);
+      } catch (err) {
+        console.error('Failed to fetch vehicles:', err);
+      }
+    };
+
+    fetchVehicles();
+    const interval = setInterval(fetchVehicles, 15_000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [selectedRoute]);
 
   // Request browser geolocation on mount
   useEffect(() => {
@@ -203,6 +398,30 @@ export default function LiveMap({ selectedStop, selectedRoute, routeStops, onSto
             </Tooltip>
           </Marker>
         )}
+
+        {/* Live bus markers — only rendered while a route is active */}
+        {selectedRoute && vehicles.map((vehicle) => {
+          // Snap raw GPS onto the polyline so the icon sits on the route line.
+          const snapped = snapToRoute(vehicle.latitude, vehicle.longitude, routeStops);
+          // Heading uses the same raw position so findNearestSegmentIdx picks
+          // the same segment as snapToRoute and the flip stays consistent.
+          const heading = getHeadingForBus(
+            vehicle.latitude, vehicle.longitude,
+            routeStops, vehicle.directionId, vehicle.bearing,
+          );
+          return (
+            <Marker
+              key={vehicle.vehicleId}
+              position={[snapped.lat, snapped.lng]}
+              icon={createBusIcon(heading, vehicle.directionId)}
+            >
+              <Popup>
+                <strong>{vehicle.licensePlate}</strong><br />
+                <span style={{ textTransform: 'capitalize' }}>{vehicle.directionLabel}</span>
+              </Popup>
+            </Marker>
+          );
+        })}
 
         {hasUserLocation && (
           <CircleMarker 
