@@ -262,25 +262,34 @@ function MapUpdater({
 /**
  * Recenter button that uses a dynamic target position and accounts for UI overlays.
  */
-function RecenterControl({ targetPosition }: { targetPosition: [number, number] }) {
+function RecenterControl({
+  targetPosition,
+  onResetToHome,
+}: {
+  targetPosition: [number, number];
+  onResetToHome: () => void;
+}) {
   const map = useMap();
-  
+
   const handleRecenter = () => {
+    // Reset all app state to the home/default state first.
+    onResetToHome();
+
     const zoom = 15;
     const isDesktop = typeof window !== 'undefined' && window.innerWidth >= 768;
     const targetLatLng = L.latLng(targetPosition[0], targetPosition[1]);
-    
+
     // Project to pixel coordinates to apply offset
     const targetPoint = map.project(targetLatLng, zoom);
-    
+
     if (isDesktop) {
       // Offset for the left sidebar on desktop
-      targetPoint.x -= 200; 
+      targetPoint.x -= 200;
     } else {
       // Offset for the bottom sheet on mobile
-      targetPoint.y += (window?.innerHeight || 800) * 0.25; 
+      targetPoint.y += (window?.innerHeight || 800) * 0.25;
     }
-    
+
     // Unproject back to LatLng and fly there
     const offsetLatLng = map.unproject(targetPoint, zoom);
     map.flyTo(offsetLatLng, zoom, { duration: 1.0 });
@@ -301,9 +310,10 @@ interface LiveMapProps {
   selectedRoute: Route | null;
   routeStops: Stop[];
   onStopClick: (stop: Stop) => void;
+  onResetToHome: () => void;
 }
 
-export default function LiveMap({ selectedStop, selectedRoute, routeStops, onStopClick }: LiveMapProps) {
+export default function LiveMap({ selectedStop, selectedRoute, routeStops, onStopClick, onResetToHome }: LiveMapProps) {
   const [userLocation, setUserLocation] = useState<[number, number]>(FSKTM_POSITION);
   const [hasUserLocation, setHasUserLocation] = useState(false);
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
@@ -439,7 +449,7 @@ export default function LiveMap({ selectedStop, selectedRoute, routeStops, onSto
           </Marker>
         )}
 
-        <RecenterControl targetPosition={userLocation} />
+        <RecenterControl targetPosition={userLocation} onResetToHome={onResetToHome} />
       </MapContainer>
     </div>
   );
