@@ -137,8 +137,10 @@ public class TransitController {
                     + "do NOT pass the internal GTFS route_id (e.g. '30000016'). "
                     + "**stopId**: pass the stop_id from stops.txt (e.g. '12000802'). "
                     + "Use /search to find both values by name. "
-                    + "Each result includes a directionId (0 = outbound, 1 = inbound) "
-                    + "so the frontend can filter by the user's direction of travel.")
+                    + "Each result includes: "
+                    + "**directionId** (0 = outbound, 1 = inbound) for filtering by direction of travel; "
+                    + "**stopsAway** (integer) — number of stops between the bus and the target stop "
+                    + "derived from the static GTFS stop sequence, null if shape data is unavailable for the route.")
     @ApiResponse(responseCode = "200", content = @Content(mediaType = "application/json"))
     @GetMapping("/eta")
     public List<Map<String, Object>> getRealtimeEta(

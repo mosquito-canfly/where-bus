@@ -89,7 +89,6 @@ data.gov.my enforces a limit of 4 requests per minute across all GTFS Realtime e
 
 ```
 where-bus/
-├── frontend/                       # Next.js frontend (Work in progress, full docs coming soon)
 ├── backend/                        # Spring Boot application
 │   └── src/main/
 │       ├── java/com/wherebus/
@@ -120,7 +119,7 @@ where-bus/
 │           │       ├── stop_times.txt
 │           │       └── shapes.txt
 │           └── application.properties
-└── frontend/                       # Next.js application (in progress)
+├── frontend/                       # Next.js frontend (Work in progress, full docs coming soon)
     └── where-bus/
 ```
 
@@ -214,7 +213,7 @@ All `routeId` parameters accept the **route short name** as displayed on buses (
 | `GET` | `/transit/routes/{shortName}/path` | `shortName` - e.g. `T815` | Ordered stop sequence for the outbound direction. Suitable for drawing a route polyline on a map. |
 | `GET` | `/transit/stops/{stopId}/routes` | `stopId` - e.g. `12000802` | All routes serving a stop, with `servesOutbound` and `servesInbound` flags per route. Use to show available routes when a user taps a stop. |
 | `GET` | `/transit/vehicles` | `routeId` - e.g. `T815` | Live GPS coordinates, bearing, and direction for all active buses on a route. |
-| `GET` | `/transit/eta` | `routeId` - e.g. `T815`, `stopId` - e.g. `12000802` | Approaching buses sorted by ETA. Excludes buses that have passed the stop and buses more than 35 minutes away. Each result includes `directionId` (0 = outbound, 1 = inbound) for frontend filtering. |
+| `GET` | `/transit/eta` | `routeId` - e.g. `T815`, `stopId` - e.g. `12000802` | Approaching buses sorted by ETA. Excludes buses that have passed the stop and buses more than 35 minutes away. Each result includes `directionId` (0 = outbound, 1 = inbound) for direction filtering, and `stopsAway` (integer stop count between the bus and the target stop, `null` if shape data is unavailable for the route). |
 | `GET` | `/transit/debug-fleet` | - | Raw feed diagnostic: total active buses, all broadcasted route IDs, and 5 sample vehicle entries. Use when `/vehicles` returns unexpected results. |
 
 ---

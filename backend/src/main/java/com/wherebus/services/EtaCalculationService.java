@@ -35,7 +35,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p><b>Cache eviction:</b> The ETA history cache is pruned of entries for vehicles no longer
  * in the active fleet at the start of each request, preventing unbounded memory growth.
  *
- * <p><b>Speed:</b> Delegates entirely to {@link LiveTrackingService#getSpeedMps}.
+ * <p><b>Speed:</b> Delegates to {@link LiveTrackingService#getSpeedMps}, which uses the
+ * feed's {@code speed} field (km/h → m/s) with a constant fallback.
  */
 @Service
 public class EtaCalculationService {
@@ -110,18 +111,21 @@ public class EtaCalculationService {
             RoadPosition targetPosition = getStopPosition(staticRouteId, directionId, targetStopId);
 
             double roadDistanceMeters;
+            Integer stopsAway = null;
 
             if (busPosition == null || targetPosition == null) {
                 usedFallback++;
                 double straightLineMeters = haversineDistanceKm(
                         busLat, busLon, targetStop.getLatitude(), targetStop.getLongitude()) * 1000.0;
                 roadDistanceMeters = straightLineMeters * HAVERSINE_ROAD_FACTOR;
+                // stopsAway remains null — no reliable index when shape data is unavailable.
             } else {
                 if (busPosition.cumulativeDistKm >= targetPosition.cumulativeDistKm) {
                     droppedPassed++;
                     continue;
                 }
                 roadDistanceMeters = (targetPosition.cumulativeDistKm - busPosition.cumulativeDistKm) * 1000.0;
+                stopsAway = Math.max(1, targetPosition.stopIndex - busPosition.stopIndex);
             }
 
             double speedMps = liveTrackingService.getSpeedMps(entry.getKey(), vehicle);
@@ -140,7 +144,7 @@ public class EtaCalculationService {
 
             heap.offer(new ArrivalPrediction(
                     entry.getKey(), licensePlate, roadDistanceMeters,
-                    rawSeconds, smoothedSeconds, directionId));
+                    rawSeconds, smoothedSeconds, directionId, stopsAway));
         }
 
         System.out.println("ℹ️  ETA route=" + routeShortName + " (→" + staticRouteId + ")"
@@ -162,6 +166,7 @@ public class EtaCalculationService {
             payload.put("etaFormatted", formatEta(p.getSmoothedSeconds(), p.getDistanceMeters()));
             payload.put("directionId", p.getDirectionId());
             payload.put("directionLabel", p.getDirectionId() == 0 ? "outbound" : "inbound");
+            payload.put("stopsAway", p.getStopsAway()); // null when shape data unavailable
             arrivals.add(payload);
         }
 
@@ -212,7 +217,7 @@ public class EtaCalculationService {
         int idx = stopIds.indexOf(stopId);
         if (idx == -1 || idx >= distances.size()) return null;
 
-        return new RoadPosition(distances.get(idx));
+        return new RoadPosition(distances.get(idx), idx);
     }
 
     private RoadPosition projectOntoRoute(String staticRouteId, int directionId,
@@ -236,7 +241,7 @@ public class EtaCalculationService {
         }
 
         if (closestIdx == -1 || closestIdx >= distances.size()) return null;
-        return new RoadPosition(distances.get(closestIdx));
+        return new RoadPosition(distances.get(closestIdx), closestIdx);
     }
 
     private double haversineDistanceKm(double lat1, double lon1, double lat2, double lon2) {
@@ -264,7 +269,12 @@ public class EtaCalculationService {
 
     private static class RoadPosition {
         final double cumulativeDistKm;
-        RoadPosition(double cumulativeDistKm) { this.cumulativeDistKm = cumulativeDistKm; }
+        final int stopIndex;
+
+        RoadPosition(double cumulativeDistKm, int stopIndex) {
+            this.cumulativeDistKm = cumulativeDistKm;
+            this.stopIndex = stopIndex;
+        }
     }
 
     private static class ArrivalPrediction {
@@ -274,15 +284,17 @@ public class EtaCalculationService {
         private final int rawSeconds;
         private final int smoothedSeconds;
         private final int directionId;
+        private final Integer stopsAway; // null when shape data is unavailable for this route
 
         ArrivalPrediction(String vehicleId, String licensePlate, double distanceMeters,
-                          int rawSeconds, int smoothedSeconds, int directionId) {
+                          int rawSeconds, int smoothedSeconds, int directionId, Integer stopsAway) {
             this.vehicleId = vehicleId;
             this.licensePlate = licensePlate;
             this.distanceMeters = distanceMeters;
             this.rawSeconds = rawSeconds;
             this.smoothedSeconds = smoothedSeconds;
             this.directionId = directionId;
+            this.stopsAway = stopsAway;
         }
 
         String getVehicleId() { return vehicleId; }
@@ -291,5 +303,6 @@ public class EtaCalculationService {
         int getRawSeconds() { return rawSeconds; }
         int getSmoothedSeconds() { return smoothedSeconds; }
         int getDirectionId() { return directionId; }
+        Integer getStopsAway() { return stopsAway; }
     }
 }
