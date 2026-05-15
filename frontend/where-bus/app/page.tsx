@@ -89,6 +89,18 @@ export default function Home() {
     setUiState("STANDBY");
   };
 
+  // Full home reset: clears selection, route stops, search, and panel.
+  // Called by the recenter button so one tap returns the app to its initial state.
+  const resetToHome = () => {
+    setSelectedStop(null);
+    setSelectedRoute(null);
+    setRouteStops([]);
+    setSearchQuery("");
+    setStopResults([]);
+    setRouteResults([]);
+    setUiState("STANDBY");
+  };
+
   // Selecting a stop on the route path: keep the route selected, just update the stop
   const handleSelectStopOnRoute = (stop: Stop) => {
     setSelectedStop(stop);
@@ -110,6 +122,7 @@ export default function Home() {
           selectedStop={selectedStop}
           routeStops={routeStops}
           onStopClick={handleSelectStopOnRoute}
+          onResetToHome={resetToHome}
         />
       </div>
 
