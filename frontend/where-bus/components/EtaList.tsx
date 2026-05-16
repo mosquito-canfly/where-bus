@@ -5,6 +5,7 @@ import { Bus } from 'lucide-react';
 
 interface EtaEntry {
   distanceMeters: number;
+  stopsAway: number | null;
   licensePlate: string;
   directionLabel: string;
   directionId: number;
@@ -23,26 +24,30 @@ export default function EtaList({ routeId, stopId }: EtaListProps) {
   const [error, setError] = useState(false);
 
   useEffect(() => {
-    let cancelled = false;
+    let currentController: AbortController | null = null;
 
     const fetchEta = async () => {
+      const controller = new AbortController();
+      currentController = controller;
       try {
-        const res = await fetch(`/api/transit/eta?routeId=${encodeURIComponent(routeId)}&stopId=${encodeURIComponent(stopId)}`);
+        const res = await fetch(
+          `/api/transit/eta?routeId=${encodeURIComponent(routeId)}&stopId=${encodeURIComponent(stopId)}`,
+          { signal: controller.signal },
+        );
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data: EtaEntry[] = await res.json();
-        if (!cancelled) {
-          setEntries(data);
-          setError(false);
-        }
-      } catch {
-        if (!cancelled) setError(true);
+        setEntries(data);
+        setError(false);
+      } catch (err) {
+        if (err instanceof Error && err.name === 'AbortError') return;
+        setError(true);
       }
     };
 
     fetchEta();
     const interval = setInterval(fetchEta, 30_000);
     return () => {
-      cancelled = true;
+      currentController?.abort();
       clearInterval(interval);
     };
   }, [routeId, stopId]);
@@ -99,7 +104,9 @@ export default function EtaList({ routeId, stopId }: EtaListProps) {
                 </div>
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium text-gray-900 truncate">{bus.licensePlate}</p>
-                  <p className="text-xs text-gray-500">{Math.round(bus.distanceMeters)} m away</p>
+                  {bus.stopsAway != null && (
+                    <p className="text-xs text-gray-500">{bus.stopsAway === 1 ? '1 stop away' : `${bus.stopsAway} stops away`}</p>
+                  )}
                 </div>
                 <span className="text-base font-bold text-gray-900 ml-2 shrink-0">
                   {bus.etaFormatted}

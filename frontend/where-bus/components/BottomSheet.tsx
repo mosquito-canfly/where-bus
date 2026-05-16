@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Bus, MapPin, Route as RouteIcon } from 'lucide-react';
+import { Bus, MapPin, Route as RouteIcon, X } from 'lucide-react';
 import { Stop, Route } from '@/app/page';
 import EtaList from '@/components/EtaList';
 
@@ -11,11 +11,12 @@ interface StopRoute {
   longName: string;
   servesOutbound: boolean;
   servesInbound: boolean;
+  category?: string; // "rapid-bus-kl" | "rapid-bus-mrtfeeder"
 }
 
 interface BottomSheetProps {
   isOpen: boolean;
-  onClose: () => void;
+  onHide?: () => void;
   selectedStop: Stop | null;
   selectedRoute: Route | null;
   routeStops: Stop[];
@@ -42,7 +43,7 @@ function useIsDesktop() {
   return isDesktop;
 }
 
-export default function BottomSheet({ isOpen, onClose, selectedStop, selectedRoute, routeStops, onSelectStop }: BottomSheetProps) {
+export default function BottomSheet({ isOpen, onHide, selectedStop, selectedRoute, routeStops, onSelectStop }: BottomSheetProps) {
   const isDesktop = useIsDesktop();
 
   // Ref attached to whichever stop row is currently selected.
@@ -111,7 +112,7 @@ export default function BottomSheet({ isOpen, onClose, selectedStop, selectedRou
           dragElastic={0.05}
           onDragEnd={(e, info) => {
             if (!isDesktop && info.offset.y > 100) {
-              onClose();
+              onHide?.();
             }
           }}
           
@@ -127,6 +128,15 @@ export default function BottomSheet({ isOpen, onClose, selectedStop, selectedRou
             <div className="w-12 h-1.5 bg-gray-300 rounded-full"></div>
           </div>
 
+          {/* Desktop-only close (hide) button */}
+          <button
+            onClick={() => onHide?.()}
+            className="hidden md:flex absolute top-4 right-4 z-10 w-8 h-8 items-center justify-center rounded-full text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors"
+            aria-label="Hide panel"
+          >
+            <X size={18} />
+          </button>
+
           {/* Scrollable Content inside the sheet */}
           <div className="px-6 pb-8 pt-2 overflow-y-auto flex-1 md:pt-8">
             
@@ -134,7 +144,22 @@ export default function BottomSheet({ isOpen, onClose, selectedStop, selectedRou
             {selectedRoute ? (
               <>
                 <h2 className="text-xl font-bold text-gray-900 mb-1 flex items-center">
-                  <RouteIcon size={20} className="mr-2 text-blue-500" />
+                  {(() => {
+                    const isMRT = selectedRoute.category
+                      ? selectedRoute.category === 'rapid-bus-mrtfeeder'
+                      : /^\d+$/.test(selectedRoute.id);
+                    const iconColor = isMRT ? undefined : '#880808';
+                    const iconLabel = isMRT ? 'MRT Feeder route' : 'RapidKL Bus route';
+                    return (
+                      <span
+                        className="bg-gray-100 p-1.5 rounded-full mr-2 shrink-0 text-gray-600 inline-flex items-center justify-center"
+                        title={iconLabel}
+                        aria-label={iconLabel}
+                      >
+                        <RouteIcon size={18} color={iconColor} />
+                      </span>
+                    );
+                  })()}
                   {selectedRoute.name}
                 </h2>
                 <p className="text-sm text-gray-500 mb-4 ml-7">{selectedRoute.longName}</p>
@@ -160,11 +185,11 @@ export default function BottomSheet({ isOpen, onClose, selectedStop, selectedRou
                             onClick={() => onSelectStop(stop)}
                             className={`w-full text-left rounded-2xl px-3 py-2.5 transition-all duration-150 border ${
                               isSelected
-                                ? 'bg-blue-50 border-blue-200 border-l-4 border-l-blue-500'
+                                ? 'bg-gray-100 border-gray-300 border-l-4 border-l-gray-600'
                                 : 'bg-gray-50 border-gray-100 hover:bg-gray-100'
                             }`}
                           >
-                            <p className={`text-sm leading-snug ${isSelected ? 'font-semibold text-blue-900' : 'font-medium text-gray-800'}`}>
+                            <p className={`text-sm leading-snug ${isSelected ? 'font-semibold text-gray-900' : 'font-medium text-gray-800'}`}>
                               {stop.name}
                             </p>
                             <p className="text-xs text-gray-400 mt-0.5">Stop ID: {stop.id}</p>
@@ -208,15 +233,29 @@ export default function BottomSheet({ isOpen, onClose, selectedStop, selectedRou
                   </div>
                 ) : (
                   <div className="space-y-3">
-                    {stopRoutes.map((route) => (
+                    {stopRoutes.map((route) => {
+                      const isMRTFeeder = route.category
+                        ? route.category === 'rapid-bus-mrtfeeder'
+                        : route.shortName === route.longName;
+                      const iconColor   = isMRTFeeder ? undefined : '#880808';
+                      const iconLabel   = isMRTFeeder ? 'MRT Feeder route' : 'RapidKL Bus route';
+                      return (
                       <div key={route.shortName} className="rounded-2xl border border-gray-100 overflow-hidden">
                         {/* Route header */}
                         <div className="flex items-center px-3 py-2.5 bg-gray-50 border-b border-gray-100">
-                          <RouteIcon size={16} className="mr-2 text-blue-500 shrink-0" />
+                          <span
+                            className="mr-2 shrink-0 text-gray-600"
+                            title={iconLabel}
+                            aria-label={iconLabel}
+                          >
+                            <RouteIcon size={16} color={iconColor} />
+                          </span>
                           <div className="flex-1 min-w-0">
                             <span className="font-semibold text-gray-900 text-sm">{route.shortName}</span>
                             {route.longName && (
-                              <span className="text-xs text-gray-500 ml-2 truncate block">{route.longName}</span>
+                              <span className="text-xs text-gray-500 ml-2 truncate block">
+                                {isMRTFeeder ? 'MRT Feeder' : 'RapidKL Bus'} · {route.longName}
+                              </span>
                             )}
                           </div>
                           <div className="flex gap-1 ml-2 shrink-0">
@@ -233,7 +272,8 @@ export default function BottomSheet({ isOpen, onClose, selectedStop, selectedRou
                           <EtaList routeId={route.shortName} stopId={selectedStop.id} />
                         </div>
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </>
