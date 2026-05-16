@@ -96,7 +96,7 @@ function snapToRoute(
 /**
  * Returns the compass bearing (0–360°, clockwise from North) the bus is
  * heading, derived from the nearest segment of the route-stop polyline.
- * Prefers the feed's bearing when non-null. Returns null if routeStops < 2.
+ * Returns null if routeStops < 2.
  * routeStops is in outbound order; inbound is flipped 180°.
  */
 function getHeadingForBus(
@@ -104,9 +104,7 @@ function getHeadingForBus(
   busLng: number,
   routeStops: Stop[],
   directionId: number,
-  feedBearing: number | null,
 ): number | null {
-  if (feedBearing !== null) return feedBearing;
   if (routeStops.length < 2) return null;
 
   // Use the same segment-finding logic as snapToRoute so heading and snapped
@@ -134,19 +132,16 @@ const BUS_COLORS = {
 
 /**
  * Builds a Leaflet DivIcon with a side-view bus silhouette (faces RIGHT by
- * default — front cabin and windshield on the right, matching the reference).
- * Flips horizontally to face travel direction:
- *   heading null or ≤ 180 (eastward) → face right (default, scaleX(1))
- *   heading > 180          (westward) → face left  (scaleX(-1))
+ * default — corresponds to compass bearing 90°/east). The wrapper div is
+ * rotated by (heading − 90°) so the front always points along the polyline.
+ * When heading is null (routeStops < 2), rotation is 0 and no transform applied.
  *
- * SVG layout (viewBox 0 0 96 64, facing right):
- *   rear body (left) at lower roof | raised front cabin (right) | large angled
- *   windshield | 3 square windows | wheel-arch cutouts | 2 wheels with hubs
+ * SVG layout (viewBox 0 0 80 50, facing right):
+ *   rect body + 3 side windows + 2 wheels with hub dots.
  */
 function createBusIcon(heading: number | null, directionId: number): L.DivIcon {
   const fill  = directionId === 0 ? BUS_COLORS.outbound : BUS_COLORS.inbound;
-  // Front is RIGHT by default; flip for westward travel
-  const flipX = heading !== null && heading > 180 ? -1 : 1;
+  const rotateDeg = heading !== null ? heading - 90 : 0;
 
   // viewBox 0 0 80 50, rendered at 40×25 px. Front = right side.
   // Minimal design: rounded-rect body, 3 side windows, 2 wheels with hub dot.
@@ -176,7 +171,7 @@ function createBusIcon(heading: number | null, directionId: number): L.DivIcon {
     html: `<div style="
       width:40px; height:40px;
       display:flex; align-items:center; justify-content:center;
-      transform:scaleX(${flipX});
+      transform:rotate(${rotateDeg}deg);
       transform-origin:center;
       filter:drop-shadow(0 2px 5px rgba(0,0,0,0.35));
     ">${svg}</div>`,
@@ -436,7 +431,7 @@ export default function LiveMap({ selectedStop, selectedRoute, routeStops, onSto
           // the same segment as snapToRoute and the flip stays consistent.
           const heading = getHeadingForBus(
             vehicle.latitude, vehicle.longitude,
-            routeStops, vehicle.directionId, vehicle.bearing,
+            routeStops, vehicle.directionId,
           );
           return (
             <Marker
