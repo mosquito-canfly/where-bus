@@ -189,30 +189,30 @@ function createBusIcon(heading: number | null, directionId: number): L.DivIcon {
  * Handles smooth camera animations and applies dynamic bounding boxes
  * and offsets so the UI never covers the active target.
  */
-function MapUpdater({ 
-  selectedStop, 
-  routeStops, 
-  userLocation 
-}: { 
-  selectedStop: Stop | null; 
-  routeStops: Stop[]; 
+function MapUpdater({
+  selectedStop,
+  routeStops,
+  userLocation,
+  isSheetOpen,
+}: {
+  selectedStop: Stop | null;
+  routeStops: Stop[];
   userLocation: [number, number];
+  isSheetOpen: boolean;
 }) {
   const map = useMap();
-  
-  useEffect(() => {
-    // Safely check window size (important for Next.js SSR)
+
+  const fitToCurrentSelection = () => {
     const isDesktop = typeof window !== 'undefined' && window.innerWidth >= 768;
 
     if (routeStops.length > 0) {
       // --- 1. ROUTE SELECTED: Fit bounds around the whole route ---
       const bounds = L.latLngBounds(routeStops.map(s => [s.latitude, s.longitude]));
-      
       map.fitBounds(bounds, {
-        paddingTopLeft: isDesktop ? [420, 50] : [50, 50], 
-        paddingBottomRight: isDesktop ? [50, 50] : [50, (window?.innerHeight || 800) * 0.55], 
+        paddingTopLeft: isDesktop ? (isSheetOpen ? [420, 50] : [50, 50]) : [50, 50],
+        paddingBottomRight: isDesktop ? [50, 50] : [50, (window?.innerHeight || 800) * 0.55],
         animate: true,
-        duration: 1.5
+        duration: 1.5,
       });
 
     } else if (selectedStop) {
@@ -220,15 +220,15 @@ function MapUpdater({
       const targetLatLng = L.latLng(selectedStop.latitude, selectedStop.longitude);
       const zoom = 17;
       const targetPoint = map.project(targetLatLng, zoom);
-      
-      if (isDesktop) {
-        targetPoint.x -= 200; 
-      } else {
-        targetPoint.y += (window?.innerHeight || 800) * 0.25; 
+
+      if (isDesktop && isSheetOpen) {
+        targetPoint.x -= 200;
+      } else if (!isDesktop) {
+        targetPoint.y += (window?.innerHeight || 800) * 0.25;
       }
-      
+
       const offsetLatLng = map.unproject(targetPoint, zoom);
-      
+
       // Distance check to prevent shivering
       if (map.getCenter().distanceTo(offsetLatLng) > 50) {
         map.flyTo(offsetLatLng, zoom, { duration: 1.5 });
@@ -239,19 +239,36 @@ function MapUpdater({
     } else {
       // --- 3. DEFAULT: Pan to user location ---
       const targetLatLng = L.latLng(userLocation[0], userLocation[1]);
-      
+
       if (map.getCenter().distanceTo(targetLatLng) > 50) {
         map.flyTo(targetLatLng, 15, { duration: 1.5 });
       } else {
-        map.setView(targetLatLng, 15); // Instantly snap, no animation shivering!
+        map.setView(targetLatLng, 15);
       }
     }
+  };
 
+  // Refit when selection changes (initial selection, stop change, etc.)
+  useEffect(() => {
+    fitToCurrentSelection();
     // Force Leaflet to recalculate container size to fix layout shifts
     const timeout = setTimeout(() => map.invalidateSize(), 100);
     return () => clearTimeout(timeout);
-
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedStop, routeStops, userLocation, map]);
+
+  // When the side panel hides, the map container widens but Leaflet caches
+  // its old pixel dimensions. Wait for the Framer Motion spring to settle
+  // (~400ms), invalidate Leaflet's size cache, then refit to the full viewport.
+  useEffect(() => {
+    if (isSheetOpen) return;
+    const timeout = setTimeout(() => {
+      map.invalidateSize();
+      fitToCurrentSelection();
+    }, 400);
+    return () => clearTimeout(timeout);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isSheetOpen]);
 
   return null;
 }
@@ -311,9 +328,10 @@ interface LiveMapProps {
   routeStops: Stop[];
   onStopClick: (stop: Stop) => void;
   onResetToHome: () => void;
+  isSheetOpen: boolean;
 }
 
-export default function LiveMap({ selectedStop, selectedRoute, routeStops, onStopClick, onResetToHome }: LiveMapProps) {
+export default function LiveMap({ selectedStop, selectedRoute, routeStops, onStopClick, onResetToHome, isSheetOpen }: LiveMapProps) {
   const [userLocation, setUserLocation] = useState<[number, number]>(FSKTM_POSITION);
   const [hasUserLocation, setHasUserLocation] = useState(false);
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
@@ -375,10 +393,11 @@ export default function LiveMap({ selectedStop, selectedRoute, routeStops, onSto
         />
         
         {/* We moved all the camera logic into MapUpdater, passing the raw state */}
-        <MapUpdater 
-          selectedStop={selectedStop} 
-          routeStops={routeStops} 
-          userLocation={userLocation} 
+        <MapUpdater
+          selectedStop={selectedStop}
+          routeStops={routeStops}
+          userLocation={userLocation}
+          isSheetOpen={isSheetOpen}
         />
         
         {polylineCoords.length > 0 && (

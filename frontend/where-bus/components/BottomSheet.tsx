@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Bus, MapPin, Route as RouteIcon } from 'lucide-react';
+import { Bus, MapPin, Route as RouteIcon, X } from 'lucide-react';
 import { Stop, Route } from '@/app/page';
 import EtaList from '@/components/EtaList';
 
@@ -16,6 +16,7 @@ interface StopRoute {
 interface BottomSheetProps {
   isOpen: boolean;
   onClose: () => void;
+  onHide?: () => void;
   selectedStop: Stop | null;
   selectedRoute: Route | null;
   routeStops: Stop[];
@@ -42,7 +43,7 @@ function useIsDesktop() {
   return isDesktop;
 }
 
-export default function BottomSheet({ isOpen, onClose, selectedStop, selectedRoute, routeStops, onSelectStop }: BottomSheetProps) {
+export default function BottomSheet({ isOpen, onClose, onHide, selectedStop, selectedRoute, routeStops, onSelectStop }: BottomSheetProps) {
   const isDesktop = useIsDesktop();
 
   // Ref attached to whichever stop row is currently selected.
@@ -126,6 +127,15 @@ export default function BottomSheet({ isOpen, onClose, selectedStop, selectedRou
           <div className="w-full flex justify-center pt-4 pb-2 shrink-0 cursor-grab active:cursor-grabbing md:hidden">
             <div className="w-12 h-1.5 bg-gray-300 rounded-full"></div>
           </div>
+
+          {/* Desktop-only close (hide) button */}
+          <button
+            onClick={() => onHide?.()}
+            className="hidden md:flex absolute top-4 right-4 z-10 w-8 h-8 items-center justify-center rounded-full text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors"
+            aria-label="Hide panel"
+          >
+            <X size={18} />
+          </button>
 
           {/* Scrollable Content inside the sheet */}
           <div className="px-6 pb-8 pt-2 overflow-y-auto flex-1 md:pt-8">

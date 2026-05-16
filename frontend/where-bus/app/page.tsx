@@ -37,6 +37,7 @@ export type UIState =
 
 export default function Home() {
   const [uiState, setUiState] = useState<UIState>("STANDBY");
+  const [isSheetOpen, setIsSheetOpen] = useState(true);
 
   // Data State
   const [searchQuery, setSearchQuery] = useState("");
@@ -100,11 +101,15 @@ export default function Home() {
     setStopResults([]);
     setRouteResults([]);
     setUiState("STANDBY");
+    setIsSheetOpen(true);
   };
+
+  const handleHideSheet = () => setIsSheetOpen(false);
 
   // Selecting a stop on the route path: keep the route selected, just update the stop
   const handleSelectStopOnRoute = (stop: Stop) => {
     setSelectedStop(stop);
+    setIsSheetOpen(true);
     // deliberately do NOT clear selectedRoute or change uiState
   };
 
@@ -124,6 +129,7 @@ export default function Home() {
           routeStops={routeStops}
           onStopClick={handleSelectStopOnRoute}
           onResetToHome={resetToHome}
+          isSheetOpen={isSheetOpen}
         />
       </div>
 
@@ -158,12 +164,14 @@ export default function Home() {
               setSelectedRoute(null);
               setRouteStops([]);
               setUiState("STOP_SELECTED");
+              setIsSheetOpen(true);
             }}
             onSelectRoute={(route) => {
               setSelectedRoute(route);
               setSelectedStop(null);
               setRouteStops([]); // clear stale stops immediately; effect will repopulate
               setUiState("ROUTE_SELECTED");
+              setIsSheetOpen(true);
             }}
           />
         </div>
@@ -180,13 +188,14 @@ export default function Home() {
 
       {/* Bottom Foreground: Draggable Data Sheet */}
       <BottomSheet
-        isOpen={uiState === "STOP_SELECTED" || uiState === "ROUTE_SELECTED"}
+        isOpen={(uiState === "STOP_SELECTED" || uiState === "ROUTE_SELECTED") && isSheetOpen}
         onClose={() => {
           setUiState("STANDBY");
           setSelectedStop(null);
           setSelectedRoute(null);
           setRouteStops([]);
         }}
+        onHide={handleHideSheet}
         selectedStop={selectedStop}
         selectedRoute={selectedRoute}
         routeStops={routeStops}
