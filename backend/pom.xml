@@ -7,6 +7,10 @@
 		<artifactId>spring-boot-starter-parent</artifactId>
 		<version>4.0.6</version>
 	</parent>
+	<groupId>com.wherebus</groupId>
+	<artifactId>wherebus</artifactId>
+	<version>0.0.1-SNAPSHOT</version>
+
     <dependencies>
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -37,8 +41,14 @@
             <version>4.34.1</version>
         </dependency>
     </dependencies>
-	<groupId>com.wherebus</groupId>
-	<artifactId>wherebus</artifactId>
-	<version>0.0.1-SNAPSHOT</version>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
 </project>
 
