@@ -95,8 +95,12 @@ export default function Home() {
     try {
       const res = await fetch(`/api/transit/search?q=${query}`);
       const data = await res.json();
-      setStopResults(data.stops || []);
-      setRouteResults(data.routes || []);
+      setStopResults((data.stops || []).slice().sort((a: Stop, b: Stop) =>
+        a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
+      ));
+      setRouteResults((data.routes || []).slice().sort((a: Route, b: Route) =>
+        a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
+      ));
     } catch (error) {
       console.error("Failed to fetch search results:", error);
     }
