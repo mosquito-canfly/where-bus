@@ -3,6 +3,7 @@
 A real-time bus tracking web app for Kuala Lumpur's RapidKL and MRT Feeder networks. Enter your stop, see which buses are coming and how far away they are.
 
 Live Demo: https://where-bus-app.vercel.app/
+> Note: First request might take around 10 seconds to load due to inactive spin down.
 
 ## Features
 
@@ -11,6 +12,18 @@ Live Demo: https://where-bus-app.vercel.app/
 - **Route discovery**: search stops and routes by name, or look up every route serving a specific stop
 - **Direction awareness**: outbound and inbound buses are distinguished so you only see buses going your way
 - **Stop path visualisation**: full ordered stop sequence for any route, ready to draw as a map polyline
+
+## Preview
+
+<div style="text-align: center;">
+  <img src="https://raw.githubusercontent.com/invzfnc/where-bus/main/docs/desktop.png" alt="Desktop view">
+  <p>Desktop view</p>
+</div>
+
+<div style="text-align: center;">
+  <img src="https://raw.githubusercontent.com/invzfnc/where-bus/main/docs/mobile.png" alt="Mobile view">
+  <p>Mobile view</p>
+</div>
 
 ## Tech Stack
 
